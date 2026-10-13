@@ -32,9 +32,10 @@ flowchart LR
 4. Validate turns the reply into a record and checks it (see below). Any problem sets the status to
    `review` with a list of reasons.
 5. Check duplicates compares valid invoices with the rows already in the Invoices tab and with each
-   other: same supplier (VAT ID, or normalised name) and same invoice number. Receipts without a number
-   match on supplier, date and total. An IBAN that differs from earlier invoices of the same supplier
-   is sent to review.
+   other: same supplier (VAT ID, or normalised name) and same invoice number (ignoring case and which
+   separator is used: `RE 2026/0042` equals `re-2026-0042`, `INV-12-34` differs from `INV-123-4`).
+   Receipts without a number match on supplier, date and total. An IBAN that differs from earlier
+   invoices of the same supplier is sent to review.
 6. Valid invoices: the file is uploaded to a folder named after the invoice month (`2026-10`, created
    if missing), a row with a link to the file is appended to the Invoices tab, and the email gets the
    processed label.
