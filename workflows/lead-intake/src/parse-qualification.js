@@ -89,6 +89,8 @@ function qualify(res, lead) {
   if (!intentOk) problems.push(`intent ${JSON.stringify(raw.intent)}`);
   const summary = text(raw.summary, MAX.summary);
   if (!summary) problems.push('summary missing');
+  const nextStep = text(raw.next_step, MAX.next_step);
+  if (!nextStep) problems.push('next_step missing');
 
   const sources = [lead.message, lead.company];
   const budget = text(raw.budget, MAX.budget);
@@ -102,7 +104,7 @@ function qualify(res, lead) {
       budget: statedIn(budget, sources) ? budget : '',
       timeline: statedIn(timeline, sources) ? timeline : '',
       summary,
-      next_step: text(raw.next_step, MAX.next_step),
+      next_step: nextStep,
     },
   };
 }

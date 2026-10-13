@@ -117,12 +117,18 @@ test('parse: a score that is not an integer from 0 to 100 goes to review', () =>
   }
 });
 
-test('parse: unknown intent or missing summary goes to review', () => {
+test('parse: unknown intent, missing summary or missing next step goes to review', () => {
   const a = parse(JSON.stringify({ ...valid, intent: 'urgent' }));
   assert.equal(a.needs_review, true);
   assert.equal(a.error, 'invalid: intent "urgent"');
   const b = parse(JSON.stringify({ ...valid, summary: '   ' }));
   assert.equal(b.error, 'invalid: summary missing');
+  for (const next_step of [undefined, '', { do: 'call' }]) {
+    const c = parse(JSON.stringify({ ...valid, next_step }));
+    assert.equal(c.needs_review, true, JSON.stringify(next_step));
+    assert.equal(c.error, 'invalid: next_step missing');
+    assert.equal(c.qualification.fit_score, null);
+  }
 });
 
 test('parse: API errors, cut-off replies, refusals and garbage go to review', () => {
@@ -167,8 +173,9 @@ test('parse: a budget or timeline the visitor did not write is dropped', () => {
 });
 
 test('parse: text fields are clamped and non-strings are ignored', () => {
-  const out = parse(JSON.stringify({ ...valid, summary: 's'.repeat(1000), next_step: { do: 'x' }, budget: 12000 }));
+  const out = parse(JSON.stringify({ ...valid, summary: 's'.repeat(1000), next_step: 'n'.repeat(500), budget: 12000 }));
   assert.equal(out.qualification.summary.length, 300);
-  assert.equal(out.qualification.next_step, '');
+  assert.equal(out.qualification.next_step.length, 200);
   assert.equal(out.qualification.budget, '');
+  assert.equal(out.needs_review, false);
 });
