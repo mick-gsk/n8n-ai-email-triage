@@ -14,8 +14,16 @@ const model = process.env.MODEL ?? 'claude-haiku-5-5';
 const prompt = readFileSync(new URL('../src/prompt.md', import.meta.url), 'utf8').trim();
 const cases = JSON.parse(readFileSync(new URL('./emails.json', import.meta.url), 'utf8'));
 
-const triggerItems = cases.map((c, i) => ({ id: String(i), threadId: String(i), from: { text: c.from }, subject: c.subject, text: c.body }));
-const prepared = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': triggerItems, Settings: [{ model, systemPrompt: prompt }] } });
+const triggerItems = cases.map((c, i) => ({
+  id: String(i),
+  threadId: String(i),
+  from: { text: c.from },
+  subject: c.subject,
+  text: c.body,
+}));
+const prepared = runCodeNode('prepare-email.js', {
+  nodes: { 'Gmail Trigger': triggerItems, Settings: [{ model, systemPrompt: prompt }] },
+});
 
 const replies = [];
 for (const { request } of prepared) {
@@ -35,6 +43,10 @@ results.forEach((r, i) => {
   const ok = r.category === exp.category;
   category += ok;
   priority += r.priority === exp.priority;
-  console.log(`${ok ? 'ok  ' : 'MISS'} ${cases[i].subject.padEnd(40)} -> ${r.category}/${r.priority} (expected ${exp.category}/${exp.priority})`);
+  console.log(
+    `${ok ? 'ok  ' : 'MISS'} ${cases[i].subject.padEnd(40)} -> ${r.category}/${r.priority} (expected ${exp.category}/${exp.priority})`,
+  );
 });
-console.log(`\ncategory accuracy ${category}/${results.length}, priority accuracy ${priority}/${results.length} (model ${model})`);
+console.log(
+  `\ncategory accuracy ${category}/${results.length}, priority accuracy ${priority}/${results.length} (model ${model})`,
+);

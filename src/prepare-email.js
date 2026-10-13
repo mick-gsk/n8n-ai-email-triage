@@ -12,34 +12,40 @@ const settings = $('Settings').first().json;
 // carries one of our labels is skipped instead of getting a second draft, alert and log row.
 const triageLabels = new Set(Object.values(settings.labels ?? {}));
 
-return $('Gmail Trigger').all().filter((item) => !(item.json.labelIds ?? []).some((id) => triageLabels.has(id))).map((item) => {
-  const m = item.json;
-  const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
-  const subject = m.subject ?? m.Subject ?? '';
-  let body = m.text ?? m.textPlain ?? m.snippet ?? '';
-  if (!body && m.html) body = String(m.html).replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ');
-  body = String(body).replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
+return $('Gmail Trigger')
+  .all()
+  .filter((item) => !(item.json.labelIds ?? []).some((id) => triageLabels.has(id)))
+  .map((item) => {
+    const m = item.json;
+    const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
+    const subject = m.subject ?? m.Subject ?? '';
+    let body = m.text ?? m.textPlain ?? m.snippet ?? '';
+    if (!body && m.html)
+      body = String(m.html)
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ');
+    body = String(body).replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
 
-  const email = { id: m.id, threadId: m.threadId, from, subject, body };
-  const userContent = [
-    '<email>',
-    `<from>${stripDelimiters(from)}</from>`,
-    `<subject>${stripDelimiters(subject)}</subject>`,
-    `<body>${stripDelimiters(body)}</body>`,
-    '</email>',
-    '',
-    'Classify the email above. Reply with the JSON object only.',
-  ].join('\n');
+    const email = { id: m.id, threadId: m.threadId, from, subject, body };
+    const userContent = [
+      '<email>',
+      `<from>${stripDelimiters(from)}</from>`,
+      `<subject>${stripDelimiters(subject)}</subject>`,
+      `<body>${stripDelimiters(body)}</body>`,
+      '</email>',
+      '',
+      'Classify the email above. Reply with the JSON object only.',
+    ].join('\n');
 
-  return {
-    json: {
-      email,
-      request: {
-        model: settings.model,
-        max_tokens: 700,
-        system: settings.systemPrompt,
-        messages: [{ role: 'user', content: userContent }],
+    return {
+      json: {
+        email,
+        request: {
+          model: settings.model,
+          max_tokens: 700,
+          system: settings.systemPrompt,
+          messages: [{ role: 'user', content: userContent }],
+        },
       },
-    },
-  };
-});
+    };
+  });
