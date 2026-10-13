@@ -27,3 +27,17 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  n8n:
+    # Imports and runs every workflow in the n8n Docker image (see scripts/check-n8n.mjs).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: docker pull docker.n8n.io/n8nio/n8n:2.43.4
+      - run: npm run check:n8n
+        env:
+          N8N_IMAGE: docker.n8n.io/n8nio/n8n:2.43.4
