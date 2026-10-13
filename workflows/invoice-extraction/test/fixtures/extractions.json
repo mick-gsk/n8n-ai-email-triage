@@ -1,0 +1,41 @@
+{
+  "germanInvoice": {
+    "document_type": "invoice",
+    "supplier_name": "Muster Bürobedarf GmbH",
+    "supplier_vat_id": "DE 123 456 788",
+    "invoice_number": "RE-2026-0042",
+    "invoice_date": "02.10.2026",
+    "due_date": "",
+    "payment_terms_days": "14",
+    "currency": "EUR",
+    "number_format": "1.234,56",
+    "net_amount": "1.250,00",
+    "vat_amount": "237,50",
+    "gross_amount": "1.487,50",
+    "vat_lines": [{ "rate": "19 %", "net": "1.250,00", "vat": "237,50" }],
+    "iban": "DE89 3704 0044 0532 0130 00",
+    "line_items": [
+      { "description": "Druckerpapier A4, 80 g", "quantity": "40", "unit_price": "12,50", "amount": "500,00" },
+      { "description": "Toner schwarz", "quantity": "5", "unit_price": "150,00", "amount": "750,00" }
+    ],
+    "uncertain_fields": []
+  },
+  "notAnInvoice": {
+    "document_type": "not_invoice",
+    "supplier_name": "",
+    "supplier_vat_id": "",
+    "invoice_number": "",
+    "invoice_date": "",
+    "due_date": "",
+    "payment_terms_days": "",
+    "currency": "",
+    "number_format": "1.234,56",
+    "net_amount": "",
+    "vat_amount": "",
+    "gross_amount": "",
+    "vat_lines": [],
+    "iban": "",
+    "line_items": [],
+    "uncertain_fields": []
+  }
+}
