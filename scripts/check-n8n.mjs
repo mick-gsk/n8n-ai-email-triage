@@ -6,7 +6,9 @@
 //  3. The cases in workflows/*/test/n8n.cases.mjs run with `n8n execute`. For a run, a copy of the
 //     workflow is changed so it can execute without real accounts:
 //       - the trigger becomes a Code node of the same name that emits the case's input items
-//         (behind a Manual Trigger), so expressions like $('Gmail Trigger') still work;
+//         (behind a Manual Trigger), so expressions like $('Gmail Trigger') still work. A case's
+//         `binary` adds binary data to those items, by index, in n8n's form:
+//         [{ attachment_0: { data: <base64>, mimeType, fileName } }];
 //       - HTTP Request URLs and the base URL of AI credentials point to a local mock server that
 //         answers with the case's responses and records every request;
 //       - nodes that need any other account (Gmail, Slack, Sheets, ...) become Set nodes that
@@ -208,8 +210,12 @@ function unflatten(flat) {
   return out;
 }
 
-const codeReturning = (items) =>
-  `return ${JSON.stringify(items.map(({ $binary, ...json }) => ($binary ? { json, binary: $binary } : { json })))};`;
+// Binary data comes either from an item's own `$binary` (stubs) or from a case's `binary` list
+// (trigger input), one entry per item.
+const codeReturning = (items, binary = []) =>
+  `return ${JSON.stringify(
+    items.map(({ $binary, ...json }, i) => ($binary || binary[i] ? { json, binary: $binary ?? binary[i] } : { json })),
+  )};`;
 
 function prepare(wf, testCase, ids, base, credentialData) {
   const copy = structuredClone(wf);
@@ -225,8 +231,8 @@ function prepare(wf, testCase, ids, base, credentialData) {
         parameters: { jsCode: codeReturning(stubs[n.name]) },
       };
     if (isTrigger(n) && n.type !== 'n8n-nodes-base.executeWorkflowTrigger') {
-      const input = testCase.input ?? [];
-      return { ...keep, type: 'n8n-nodes-base.code', typeVersion: 2, parameters: { jsCode: codeReturning(input) } };
+      const jsCode = codeReturning(testCase.input ?? [], testCase.binary);
+      return { ...keep, type: 'n8n-nodes-base.code', typeVersion: 2, parameters: { jsCode } };
     }
     if (n.type === 'n8n-nodes-base.httpRequest') {
       const url = n.parameters.url.replace(/^(=?)https?:\/\//, `$1${base}/`);

@@ -3,6 +3,7 @@
 
 interface N8nItem<T = unknown> {
   json: T;
+  binary?: Record<string, unknown>;
   pairedItem?: { item: number };
 }
 
