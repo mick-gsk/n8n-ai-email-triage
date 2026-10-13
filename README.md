@@ -1,8 +1,8 @@
 # n8n AI workflows
 
 Importable n8n workflows for small-business automation, each with an AI step that is validated
-before anything is written, sent or stored. Every workflow is generated from source files and
-unit-tested.
+before anything is written, sent or stored. Every workflow is generated from source files,
+unit-tested, and run in a real n8n instance before it is committed.
 
 | Workflow | What it does | Services |
 |---|---|---|
@@ -20,18 +20,19 @@ Each folder has its own README with setup steps, configuration, design decisions
 4. Import `shared/error-alert/workflow.json` once and select it under **Workflow settings → Error
    workflow** of each workflow.
 
-The workflows target n8n 2.x.
+The workflows target n8n 2.x and were last run on n8n 2.43.4.
 
 ## How the repository is built
 
 ```
 lib/                 helpers shared by the build scripts and tests
 scripts/build.mjs    runs every build.mjs below
+scripts/check-n8n.mjs  checks all exports against a real n8n instance (Docker)
 shared/<name>/       workflows used by the others
 workflows/<name>/
   build.mjs          describes the workflow in code and writes workflow.json
   src/               Code node sources and prompts, as normal files
-  test/              unit tests
+  test/              unit tests and the cases run in n8n
 ```
 
 `workflow.json` files are generated; edit `build.mjs` or `src/` and run `npm run build`.
@@ -41,7 +42,19 @@ npm ci
 npm test             # build all workflows, run unit and structure tests
 npm run lint         # ESLint + Prettier
 npm run typecheck    # tsc on the Code node sources (// @ts-check + JSDoc)
+npm run check:n8n    # needs Docker
 ```
+
+`npm run check:n8n` uses the `n8nio/n8n` image (set `N8N_IMAGE` to pin a version) and checks three
+things:
+
+1. Every node type and version exists in that n8n release, and every top-level node parameter is
+   one the node knows.
+2. Every export imports with `n8n import:workflow`.
+3. The cases in `workflows/*/test/n8n.cases.mjs` run with `n8n execute`. For a run, the trigger emits
+   the case's test input, HTTP calls and AI credentials go to a local mock server, and nodes that
+   need a real account (Gmail, Slack, Sheets, CRMs) are replaced by nodes that record what they would
+   have sent. Code, If, Switch, Merge, HTTP Request and AI nodes run as exported.
 
 ## License
 

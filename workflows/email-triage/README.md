@@ -110,6 +110,12 @@ timeout and up to 4 tries, polling every minute.
 `$()`, and checks the export: every category has a label, the export is in sync with `src/`, retry and
 escaping settings are in place.
 
+`npm run check:n8n -- email-triage` imports the workflow into n8n 2.43 (Docker) and runs it: the
+Gmail trigger emits the emails from [`test/fixtures/emails.json`](test/fixtures/emails.json), Claude is
+answered by a local mock, and Gmail, Slack and Sheets are replaced by nodes that record what would have
+been sent. The cases in [`test/n8n.cases.mjs`](test/n8n.cases.mjs) check that an urgent email is
+labelled, alerted, drafted and logged, and that an API error still ends up labelled for review.
+
 ### Measuring the prompt
 
 [`eval/emails.json`](eval/emails.json) holds 28 labelled emails in English and German, including
@@ -126,5 +132,5 @@ changes can be compared before going live.
 | `src/prompt.md` | system prompt for Claude |
 | `src/prepare-email.js` | Code node: normalise email, build API request |
 | `src/parse-result.js` | Code node: validate the AI reply |
-| `test/` | unit tests and structural checks |
+| `test/` | unit tests, structural checks and the n8n run cases |
 | `eval/` | labelled emails and an accuracy script |

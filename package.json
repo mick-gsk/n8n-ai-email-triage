@@ -11,7 +11,8 @@
     "lint": "eslint . && prettier --check \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
     "format": "prettier --write \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
     "typecheck": "tsc -p .",
-    "eval:email-triage": "node workflows/email-triage/eval/run.mjs"
+    "eval:email-triage": "node workflows/email-triage/eval/run.mjs",
+    "check:n8n": "node scripts/check-n8n.mjs"
   },
   "engines": {
     "node": ">=20"
