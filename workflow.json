@@ -195,7 +195,7 @@
           "mode": "name",
           "value": "={{ $('Settings').first().json.slackChannel }}"
         },
-        "text": "=:rotating_light: *{{ $json.category }}* from {{ $json.from }}\n*{{ $json.subject }}*\n{{ $json.summary }}",
+        "text": "=:rotating_light: *{{ $json.category }}* from {{ String($json.from).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}\n*{{ String($json.subject).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}*\n{{ String($json.summary).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
         "otherOptions": {}
       },
       "credentials": {
@@ -385,7 +385,9 @@
             }
           ]
         },
-        "options": {}
+        "options": {
+          "cellFormat": "RAW"
+        }
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
