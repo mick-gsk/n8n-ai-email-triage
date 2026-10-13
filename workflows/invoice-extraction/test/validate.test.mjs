@@ -267,6 +267,24 @@ describe('Validate', () => {
       assert.equal(german({ iban: 'not an iban' }).status, 'review');
     });
 
+    test('IBAN lengths are checked for every registry country', () => {
+      for (const iban of [
+        'AD12 0001 2030 2003 5910 0100',
+        'SM86 U032 2509 8000 0000 0270 100',
+        'VA59 0011 2300 0012 3456 78',
+        'AL47 2121 1009 0000 0002 3569 8741',
+        'ME25 5050 0001 2345 6789 51',
+        'MK07 2501 2000 0058 984',
+        'MD24 AG00 0225 1000 1310 4168',
+        'RS35 2600 0560 1001 6113 79',
+      ]) {
+        assert.deepEqual(german({ iban }).reasons, [], iban);
+      }
+      // Both pass the mod 97 check: AD needs 24 characters, and US has no IBANs.
+      assert.deepEqual(german({ iban: 'AD8112345678901' }).reasons, ['IBAN AD8112345678901 is not valid']);
+      assert.equal(german({ iban: 'US561234567890123456789' }).status, 'review');
+    });
+
     test('VAT IDs are checked against the country format', () => {
       for (const id of ['ATU12345678', 'NL123456789B01', 'FR12345678901', 'CHE-123.456.789 MWST', 'BE0123456789']) {
         assert.deepEqual(german({ supplier_vat_id: id }).reasons, [], id);

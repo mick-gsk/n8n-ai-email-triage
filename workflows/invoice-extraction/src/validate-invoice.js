@@ -42,9 +42,16 @@ const CURRENCIES = new Set(
     'BGN ANG'
   ).split(' '),
 );
-// IBAN length per SEPA country.
+// IBAN length per country, from the SWIFT IBAN registry (release 101). Territories that use
+// another country's IBANs (Åland: FI, Jersey: GB, French overseas departments: FR) are covered by it.
 const IBAN_LENGTHS = Object.fromEntries(
-  'AT20 BE16 BG22 CH21 CY28 CZ24 DE22 DK18 EE20 ES24 FI18 FR27 GB22 GR27 HR21 HU28 IE22 IS26 IT27 LI21 LT20 LU20 LV21 MC27 MT31 NL18 NO15 PL28 PT25 RO24 SE24 SI19 SK24'
+  (
+    'AD24 AE23 AL28 AT20 AZ28 BA20 BE16 BG22 BH22 BI27 BR29 BY28 CH21 CR22 CY28 CZ24 DE22 DJ27 DK18 DO28 ' +
+    'EE20 EG29 ES24 FI18 FK18 FO18 FR27 GB22 GE22 GI23 GL18 GR27 GT28 HN28 HR21 HU28 IE22 IL23 IQ23 IS26 ' +
+    'IT27 JO30 KW30 KZ20 LB28 LC32 LI21 LT20 LU20 LV21 LY25 MC27 MD24 ME22 MK19 MN20 MR27 MT31 MU30 NI28 ' +
+    'NL18 NO15 OM23 PK24 PL28 PS29 PT25 QA29 RO24 RS22 RU33 SA24 SC31 SD18 SE24 SI19 SK24 SM27 SO23 ST25 ' +
+    'SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20 YE30'
+  )
     .split(' ')
     .map((s) => [s.slice(0, 2), Number(s.slice(2))]),
 );
@@ -206,8 +213,8 @@ function parseDate(raw, order) {
 function ibanValid(iban) {
   const country = iban.slice(0, 2);
   if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(iban)) return false;
-  if (IBAN_LENGTHS[country] && iban.length !== IBAN_LENGTHS[country]) return false;
-  if (iban.length < 15 || iban.length > 34) return false;
+  // A country outside the registry has no IBAN.
+  if (iban.length !== IBAN_LENGTHS[country]) return false;
   const digits = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => String(c.charCodeAt(0) - 55));
   let rest = 0;
   for (const c of digits) rest = (rest * 10 + Number(c)) % 97;
