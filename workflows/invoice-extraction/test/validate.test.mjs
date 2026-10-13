@@ -97,6 +97,12 @@ describe('Validate', () => {
       });
     }
 
+    test('an amount too large to be a number goes to review', () => {
+      const inv = gross('9'.repeat(400));
+      assert.equal(inv.gross_amount, null);
+      assert.match(inv.reasons.join(), /gross amount: .* is not a usable amount/);
+    });
+
     test('missing number format goes to review', () => {
       assert.match(gross('12,50', '').reasons.join(), /number format missing/);
     });
@@ -109,9 +115,18 @@ describe('Validate', () => {
       assert.deepEqual(inv.reasons, ['net 1250.00 + VAT 237.50 = 1487.50, but gross is 1478.50']);
     });
 
-    test('a difference of up to 0.02 is rounding', () => {
+    test('totals that do not reconcile go to review', () => {
+      const inv = german({ net_amount: '100,00', vat_amount: '19,00', gross_amount: '1.190,00', vat_lines: [] });
+      assert.equal(inv.status, 'review');
+      assert.deepEqual(inv.reasons, ['net 100.00 + VAT 19.00 = 119.00, but gross is 1190.00']);
+    });
+
+    test('a difference of up to 0.02 is rounding, compared in cents', () => {
       assert.equal(german({ gross_amount: '1.487,52' }).status, 'ok');
       assert.equal(german({ gross_amount: '1.487,53' }).status, 'review');
+      // 0.84 + 0.16 - 1.02 is 0.020000000000000018 in floating point.
+      const small = german({ net_amount: '0,84', vat_amount: '0,16', gross_amount: '1,02', vat_lines: [] });
+      assert.deepEqual(small.reasons, []);
     });
 
     test('VAT lines are checked against their rate and against the totals', () => {
@@ -125,6 +140,14 @@ describe('Validate', () => {
       });
       assert.match(split.reasons.join(), /VAT lines add up to 207\.50, but VAT total is 237\.50/);
       assert.equal(german({ vat_lines: [{ rate: '119', net: '1', vat: '1' }] }).status, 'review');
+    });
+
+    test('a VAT line needs a readable rate', () => {
+      for (const r of ['', 'n/a', '19/7']) {
+        const inv = german({ vat_lines: [{ rate: r, net: '1.250,00', vat: '237,50' }] });
+        assert.deepEqual(inv.reasons, ['VAT line 1: rate missing or unreadable'], r);
+      }
+      assert.deepEqual(german({ vat_lines: [{ rate: '19,0 %', net: '1.250,00', vat: '237,50' }] }).reasons, []);
     });
 
     test('an invoice needs net, VAT and gross', () => {

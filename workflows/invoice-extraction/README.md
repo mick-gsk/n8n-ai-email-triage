@@ -45,8 +45,8 @@ What Validate checks:
 
 | Check | Rule |
 |---|---|
-| Amounts | Parsed in the document's number format (`1.234,56` or `1,234.56`, also `1'234.56`, `1 234,56`, trailing minus, brackets). An amount that does not fit the format is an error, not a guess. |
-| Totals | net + VAT = gross within 0.02; each VAT line's VAT = net × rate; VAT lines add up to the totals. Invoices and credit notes need all three totals, receipts only gross. |
+| Amounts | Parsed in the document's number format (`1.234,56` or `1,234.56`, also `1'234.56`, `1 234,56`, trailing minus, brackets). An amount that does not fit the format, or is too large to be a number, is an error, not a guess. |
+| Totals | net + VAT = gross within 0.02 (compared in whole cents); each VAT line needs a readable rate, and its VAT = net × rate; VAT lines add up to the totals. Invoices and credit notes need all three totals, receipts only gross. |
 | Credit notes | Stored with negative amounts, however the document prints them. Mixed signs go to review; so does a negative total on an invoice. |
 | Dates | `2.10.2026`, `02.10.26`, `2026-10-02`, `2. Oktober 2026`, `Oct 2, 2026` and similar to ISO. Slash dates follow `dateOrder` unless one part is above 12. Payment terms in days become a due date. Due date before invoice date, or an invoice date in the future, goes to review. |
 | IBAN | Length per SEPA country and mod-97 checksum. |

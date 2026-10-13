@@ -5,7 +5,8 @@
 // date not before the invoice date. Every problem is collected as a reason and the item gets
 // status "review"; only a record without any reason is written to the sheet as "ok".
 // The reply is not trusted: the document it was read from may contain text aimed at the model.
-const TOLERANCE = 0.02;
+// Allowed rounding difference, in cents; amounts are compared as whole cents, not as floats.
+const TOLERANCE_CENTS = 2;
 const MAX_TEXT = 200;
 const MAX_LINE_ITEMS = 100;
 const TYPES = ['invoice', 'credit_note', 'receipt', 'not_invoice'];
@@ -102,6 +103,12 @@ const text = (v, max = MAX_TEXT) =>
 /** @param {number} n */
 const round2 = (n) => Math.round(n * 100) / 100;
 
+/** @param {number} n */
+const cents = (n) => Math.round(n * 100);
+
+/** @param {number} a @param {number} b */
+const differs = (a, b) => Math.abs(cents(a) - cents(b)) > TOLERANCE_CENTS;
+
 /** @param {number | null} n */
 const fmt = (n) => (n === null ? '?' : n.toFixed(2));
 
@@ -137,6 +144,7 @@ function parseAmount(raw, decimal) {
     (fraction === undefined || /^\d+$/.test(fraction));
   if (!valid) throw new Error(`"${text(raw, 40)}" does not match the number format`);
   const n = Number(groups.join('') + (fraction === undefined ? '' : `.${fraction}`));
+  if (!Number.isFinite(n)) throw new Error(`"${text(raw, 40)}" is not a usable amount`);
   return negative ? -n : n;
 }
 
@@ -273,10 +281,12 @@ function validate(raw, settings, now) {
   const amount = (label, v) => /** @type {number | null} */ (field(label, v, 'amount'));
   /** @param {string} label @param {unknown} v */
   const date = (label, v) => /** @type {string} */ (field(label, v, 'date'));
-  /** @param {unknown} v "19 %", "7,0" */
+  /** @param {unknown} v "19 %", "7,0"; null if empty or not a plain number */
   const rate = (v) => {
-    const n = parseFloat(String(v ?? '').replace(',', '.'));
-    return Number.isNaN(n) ? null : n;
+    const s = String(v ?? '')
+      .replace(/[\s%]/g, '')
+      .replace(',', '.');
+    return /^\d{1,3}(\.\d{1,2})?$/.test(s) ? Number(s) : null;
   };
   const vatLines = Array.isArray(raw.vat_lines) ? raw.vat_lines.slice(0, 20) : [];
   const lineItems = Array.isArray(raw.line_items) ? raw.line_items.slice(0, MAX_LINE_ITEMS) : [];
@@ -352,25 +362,20 @@ function validate(raw, settings, now) {
   if (type !== 'receipt' && (net === null || vat === null)) reasons.push('net or VAT amount missing');
   if (gross !== null && [net, vat].some((n) => n !== null && n !== 0 && Math.sign(n) !== Math.sign(gross)))
     reasons.push('amounts have mixed signs');
-  if (net !== null && vat !== null && gross !== null && Math.abs(net + vat - gross) > TOLERANCE)
+  if (net !== null && vat !== null && gross !== null && differs(net + vat, gross))
     reasons.push(`net ${fmt(net)} + VAT ${fmt(vat)} = ${fmt(round2(net + vat))}, but gross is ${fmt(gross)}`);
 
   inv.vat_lines.forEach((l, i) => {
-    if (l.rate !== null && (l.rate < 0 || l.rate > 30))
-      reasons.push(`VAT line ${i + 1}: rate ${l.rate}% is not plausible`);
-    else if (
-      l.rate !== null &&
-      l.net !== null &&
-      l.vat !== null &&
-      Math.abs((l.net * l.rate) / 100 - l.vat) > TOLERANCE
-    )
+    if (l.rate === null) reasons.push(`VAT line ${i + 1}: rate missing or unreadable`);
+    else if (l.rate > 30) reasons.push(`VAT line ${i + 1}: rate ${l.rate}% is not plausible`);
+    else if (l.net !== null && l.vat !== null && differs((l.net * l.rate) / 100, l.vat))
       reasons.push(`VAT line ${i + 1}: ${l.rate}% of ${fmt(l.net)} is not ${fmt(l.vat)}`);
   });
   /** @param {'net' | 'vat'} key */
   const lineSum = (key) => round2(inv.vat_lines.reduce((sum, l) => sum + (l[key] ?? 0), 0));
-  if (inv.vat_lines.length && vat !== null && Math.abs(lineSum('vat') - vat) > TOLERANCE)
+  if (inv.vat_lines.length && vat !== null && differs(lineSum('vat'), vat))
     reasons.push(`VAT lines add up to ${fmt(lineSum('vat'))}, but VAT total is ${fmt(vat)}`);
-  if (inv.vat_lines.length && net !== null && Math.abs(lineSum('net') - net) > TOLERANCE)
+  if (inv.vat_lines.length && net !== null && differs(lineSum('net'), net))
     reasons.push(`VAT lines add up to net ${fmt(lineSum('net'))}, but net total is ${fmt(net)}`);
 
   if (inv.iban && !ibanValid(inv.iban)) reasons.push(`IBAN ${inv.iban} is not valid`);
