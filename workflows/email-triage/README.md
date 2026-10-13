@@ -63,8 +63,8 @@ Settings node:
 | `sheetId` | placeholder | Needs a tab `Log` with the header row `processedAt, from, subject, category, priority, summary, needs_reply, needs_review, error`. |
 | `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so tests and eval use the same text. |
 
-Set in the code (`src/`, `build.mjs`): body limit 6,000 characters, sender and subject
-300, `max_tokens` 700, drafts capped at 2,000 characters, Claude calls batched 5 per second with a 60 s
+Set in the code (`src/`, `build.mjs`): body limit 6,000 characters, sender and subject cut to 300
+in the prompt (draft, Slack and log get them whole), `max_tokens` 700, drafts capped at 2,000 characters, Claude calls batched 5 per second with a 60 s
 timeout and up to 4 tries, polling every minute.
 
 ## Design decisions

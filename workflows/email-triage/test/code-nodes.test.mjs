@@ -83,11 +83,14 @@ test('prepare: turns off thinking so the reply fits in max_tokens', () => {
   assert.equal(first.request.max_tokens, 700);
 });
 
-test('prepare: caps sender and subject length', () => {
+test('prepare: caps sender and subject in the prompt but keeps them whole for the draft and log', () => {
   const long = [{ ...emails[0], subject: 's'.repeat(5000), from: { text: 'f'.repeat(5000) } }];
   const [out] = runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
-  assert.equal(out.email.subject.length, 300);
-  assert.equal(out.email.from.length, 300);
+  assert.equal(out.email.subject.length, 5000);
+  assert.equal(out.email.from.length, 5000);
+  const prompt = out.request.messages[0].content;
+  assert.match(prompt, /<subject>s{300}<\/subject>/);
+  assert.match(prompt, /<from>f{300}<\/from>/);
 });
 
 test('prepare: truncates very long emails', () => {

@@ -42,8 +42,9 @@ const messages = $('Gmail Trigger')
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return messages.map((m) => {
-  const from = (m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '').slice(0, MAX_HEADER_CHARS);
-  const subject = (m.subject ?? m.Subject ?? '').slice(0, MAX_HEADER_CHARS);
+  // Kept whole for the draft, Slack and the log; only the copy in the prompt is shortened.
+  const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
+  const subject = m.subject ?? m.Subject ?? '';
   let body = m.text ?? m.textPlain ?? m.snippet ?? '';
   if (!body && m.html) body = htmlToText(m.html);
   body = body.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
@@ -51,8 +52,8 @@ return messages.map((m) => {
   const email = { id: m.id, threadId: m.threadId, from, subject, body };
   const userContent = [
     '<email>',
-    `<from>${stripDelimiters(from)}</from>`,
-    `<subject>${stripDelimiters(subject)}</subject>`,
+    `<from>${stripDelimiters(from.slice(0, MAX_HEADER_CHARS))}</from>`,
+    `<subject>${stripDelimiters(subject.slice(0, MAX_HEADER_CHARS))}</subject>`,
     `<body>${stripDelimiters(body)}</body>`,
     '</email>',
     '',
