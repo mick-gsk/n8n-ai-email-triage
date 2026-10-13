@@ -1,0 +1,14 @@
+[
+  {
+    "id": "18f0a1", "threadId": "18f0a1",
+    "from": { "value": [{ "address": "anna@customer.example", "name": "Anna" }], "text": "Anna <anna@customer.example>" },
+    "subject": "Checkout broken since this morning",
+    "text": "Hi,\n\nsince 8am none of our customers can pay. The checkout shows error 500.   Please help ASAP.\n\nAnna"
+  },
+  {
+    "id": "18f0a2", "threadId": "18f0a2",
+    "from": { "value": [{ "address": "news@tool.example" }], "text": "news@tool.example" },
+    "subject": "Our October product update",
+    "html": "<style>p{color:red}</style><p>New <b>features</b> this month!</p>"
+  }
+]

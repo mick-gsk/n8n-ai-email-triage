@@ -1,0 +1,10 @@
+[
+  {"expected": {"category": "support", "priority": "high"}, "from": "anna@shop.example", "subject": "Checkout broken since this morning", "body": "Since 8am none of our customers can pay. The checkout shows error 500. Please help ASAP."},
+  {"expected": {"category": "sales", "priority": "normal"}, "from": "tom@agency.example", "subject": "Quote for 20 licences?", "body": "Hi, we are considering your tool for our team of 20. Could you send a quote for annual billing?"},
+  {"expected": {"category": "billing", "priority": "normal"}, "from": "finance@client.example", "subject": "Invoice 2026-114 shows wrong VAT ID", "body": "Hello, the invoice you sent last week has our old VAT ID. Could you issue a corrected invoice?"},
+  {"expected": {"category": "newsletter", "priority": "low"}, "from": "news@saas.example", "subject": "October product update", "body": "New this month: dark mode, faster exports and a new API endpoint. Read more on our blog."},
+  {"expected": {"category": "spam", "priority": "low"}, "from": "winner@lottery.example", "subject": "You have won 1,000,000 USD!!!", "body": "Congratulations! Send your bank details to claim your prize today."},
+  {"expected": {"category": "job", "priority": "normal"}, "from": "lisa@mail.example", "subject": "Application: Junior Developer", "body": "Dear team, attached is my application for the junior developer position. I look forward to hearing from you."},
+  {"expected": {"category": "support", "priority": "normal"}, "from": "kunde@firma.example", "subject": "Frage zum Export", "body": "Hallo, wie kann ich meine Daten als CSV exportieren? Ich finde die Funktion nicht. Danke!"},
+  {"expected": {"category": "partnership", "priority": "normal"}, "from": "ceo@integrations.example", "subject": "Integration partnership", "body": "We build a CRM used by 3,000 small businesses and would love to discuss a native integration with your product."}
+]

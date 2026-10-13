@@ -1,0 +1,501 @@
+{
+  "name": "AI Email Triage (Gmail + Claude)",
+  "nodes": [
+    {
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ],
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "settings",
+      "name": "Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"model\": \"claude-haiku-5-5\",\n  \"systemPrompt\": \"You sort incoming business email for a small company. Read the email and reply with ONE JSON object, nothing else:\\n\\n{\\n  \\\"category\\\": \\\"support\\\" | \\\"sales\\\" | \\\"billing\\\" | \\\"partnership\\\" | \\\"job\\\" | \\\"newsletter\\\" | \\\"spam\\\" | \\\"other\\\",\\n  \\\"priority\\\": \\\"high\\\" | \\\"normal\\\" | \\\"low\\\",\\n  \\\"summary\\\": \\\"one sentence, max 25 words, in English\\\",\\n  \\\"needs_reply\\\": true | false,\\n  \\\"language\\\": \\\"ISO 639-1 code of the email, e.g. en or de\\\",\\n  \\\"draft_reply\\\": \\\"a short, polite reply in the email's language, or an empty string if needs_reply is false\\\"\\n}\\n\\nRules:\\n- priority \\\"high\\\": something is broken for a customer, money is at risk, a legal or security issue, or an explicit deadline within 48 hours.\\n- priority \\\"low\\\": newsletters, notifications, cold outreach, spam.\\n- Never invent facts, prices or promises in draft_reply. If information is missing, say a colleague will follow up.\\n- Sign draft replies with \\\"Best regards\\\" (or the equivalent in the email's language) and no name.\",\n  \"labels\": {\n    \"support\": \"Label_SUPPORT\",\n    \"sales\": \"Label_SALES\",\n    \"billing\": \"Label_BILLING\",\n    \"partnership\": \"Label_PARTNERSHIP\",\n    \"job\": \"Label_JOB\",\n    \"newsletter\": \"Label_NEWSLETTER\",\n    \"spam\": \"Label_SPAM\",\n    \"other\": \"Label_REVIEW\"\n  },\n  \"slackChannel\": \"#inbox-alerts\",\n  \"sheetId\": \"YOUR_GOOGLE_SHEET_ID\"\n}",
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "prepare-email",
+      "name": "Prepare email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// n8n Code node \"Prepare email\" (mode: run once for all items).\n// Normalises the Gmail trigger output into a compact object and builds the LLM request body.\nconst MAX_CHARS = 6000;\n\nconst settings = $('Settings').first().json;\n\nreturn $('Gmail Trigger').all().map((item) => {\n  const m = item.json;\n  const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';\n  const subject = m.subject ?? m.Subject ?? '';\n  let body = m.text ?? m.textPlain ?? m.snippet ?? '';\n  if (!body && m.html) body = String(m.html).replace(/<style[\\s\\S]*?<\\/style>/gi, '').replace(/<[^>]+>/g, ' ');\n  body = String(body).replace(/\\s+/g, ' ').trim().slice(0, MAX_CHARS);\n\n  const email = { id: m.id, threadId: m.threadId, from, subject, body };\n  const userContent = `From: ${from}\\nSubject: ${subject}\\n\\n${body}`;\n\n  return {\n    json: {\n      email,\n      request: {\n        model: settings.model,\n        max_tokens: 700,\n        system: settings.systemPrompt,\n        messages: [{ role: 'user', content: userContent }],\n      },\n    },\n  };\n});\n"
+      }
+    },
+    {
+      "id": "ask-claude",
+      "name": "Ask Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Anthropic API key (x-api-key)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "parse-ai-result",
+      "name": "Parse AI result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// n8n Code node \"Parse AI result\" (mode: run once for all items).\n// Turns the model's reply into a validated triage object. Anything malformed becomes\n// category \"other\" with needs_review = true, so no email is ever silently dropped.\nconst CATEGORIES = ['support', 'sales', 'billing', 'partnership', 'job', 'newsletter', 'spam', 'other'];\nconst PRIORITIES = ['high', 'normal', 'low'];\n\nfunction extractJson(text) {\n  const start = text.indexOf('{');\n  const end = text.lastIndexOf('}');\n  if (start === -1 || end <= start) throw new Error('no JSON object in model reply');\n  return JSON.parse(text.slice(start, end + 1));\n}\n\nreturn $input.all().map((item, i) => {\n  const email = $('Prepare email').all()[i].json.email;\n  const reply = item.json.content?.map((c) => c.text ?? '').join('') ?? item.json.text ?? '';\n  let triage;\n  try {\n    const raw = extractJson(reply);\n    const problems = [];\n    if (!CATEGORIES.includes(raw.category)) problems.push(`category \"${raw.category}\"`);\n    if (!PRIORITIES.includes(raw.priority)) problems.push(`priority \"${raw.priority}\"`);\n    triage = {\n      category: CATEGORIES.includes(raw.category) ? raw.category : 'other',\n      priority: PRIORITIES.includes(raw.priority) ? raw.priority : 'normal',\n      summary: String(raw.summary ?? '').slice(0, 300),\n      needs_reply: raw.needs_reply === true,\n      language: String(raw.language ?? '').slice(0, 5),\n      draft_reply: raw.needs_reply === true ? String(raw.draft_reply ?? '') : '',\n      needs_review: problems.length > 0,\n      error: problems.length ? `invalid ${problems.join(', ')}` : '',\n    };\n  } catch (err) {\n    triage = {\n      category: 'other', priority: 'normal', summary: '', needs_reply: false, language: '',\n      draft_reply: '', needs_review: true, error: String(err.message ?? err),\n    };\n  }\n  return { json: { ...email, ...triage, processedAt: new Date().toISOString() }, pairedItem: { item: i } };\n});\n"
+      }
+    },
+    {
+      "id": "add-gmail-label",
+      "name": "Add Gmail label",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1120,
+        80
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "addLabels",
+        "messageId": "={{ $json.id }}",
+        "labelIds": "={{ [ $('Settings').first().json.labels[$json.category] ] }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "high-priority-",
+      "name": "High priority?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "high-priority",
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "high",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-on-slack",
+      "name": "Alert on Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        240
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Settings').first().json.slackChannel }}"
+        },
+        "text": "=:rotating_light: *{{ $json.category }}* from {{ $json.from }}\n*{{ $json.subject }}*\n{{ $json.summary }}",
+        "otherOptions": {}
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "id": "needs-reply-",
+      "name": "Needs reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        440
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "needs-reply",
+              "leftValue": "={{ $json.needs_reply && !$json.needs_review }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "create-reply-draft",
+      "name": "Create reply draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1340,
+        420
+      ],
+      "parameters": {
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.subject.startsWith('Re:') ? $json.subject : 'Re: ' + $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.draft_reply }}",
+        "options": {
+          "threadId": "={{ $json.threadId }}",
+          "sendTo": "={{ $json.from }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "log-to-google-sheets",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        620
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Settings').first().json.sheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processedAt": "={{ $json.processedAt }}",
+            "from": "={{ $json.from }}",
+            "subject": "={{ $json.subject }}",
+            "category": "={{ $json.category }}",
+            "priority": "={{ $json.priority }}",
+            "summary": "={{ $json.summary }}",
+            "needs_reply": "={{ $json.needs_reply }}",
+            "needs_review": "={{ $json.needs_review }}",
+            "error": "={{ $json.error }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processedAt",
+              "displayName": "processedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from",
+              "displayName": "from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "needs_reply",
+              "displayName": "needs_reply",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "needs_review",
+              "displayName": "needs_review",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Prepare email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare email": {
+      "main": [
+        [
+          {
+            "node": "Ask Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Claude": {
+      "main": [
+        [
+          {
+            "node": "Parse AI result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI result": {
+      "main": [
+        [
+          {
+            "node": "Add Gmail label",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "High priority?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Needs reply?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High priority?": {
+      "main": [
+        [
+          {
+            "node": "Alert on Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Needs reply?": {
+      "main": [
+        [
+          {
+            "node": "Create reply draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "n8n-ai-email-triage",
+  "version": "1.0.0",
+  "description": "n8n workflow that sorts Gmail with Claude: labels, Slack alerts for urgent mail, reply drafts and a Google Sheets log.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-workflow.mjs",
+    "test": "node scripts/build-workflow.mjs && node --test test/*.test.mjs",
+    "eval": "node eval/run.mjs"
+  },
+  "engines": { "node": ">=20" }
+}
