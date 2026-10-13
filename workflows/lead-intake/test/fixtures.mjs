@@ -6,7 +6,11 @@ export const src = (file) => new URL(`../src/${file}`, import.meta.url);
 const workflow = JSON.parse(readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
 export const exported = JSON.parse(workflow.nodes.find((n) => n.name === 'Settings').parameters.jsonOutput);
 export const secret = 'test-secret-5f0c9a7e21';
-export const settings = { ...exported, webhookSecret: secret };
+export const settings = {
+  ...exported,
+  webhookSecret: secret,
+  businessDescription: 'Web design agency for small businesses. Websites and shops from 5,000 to 30,000 EUR.',
+};
 
 /** Lead as Validate lead produces it, for the later nodes. */
 export const lead = (extra = {}) => ({

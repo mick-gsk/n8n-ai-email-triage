@@ -79,6 +79,21 @@ test('validate: the exported placeholder secret, or a short one, is refused', ()
   }
 });
 
+test('validate: the exported placeholder business description is refused', () => {
+  for (const businessDescription of [exported.businessDescription, '  ']) {
+    const out = validate(post(form), { ...settings, businessDescription });
+    assert.equal(out.status, 'misconfigured');
+    assert.equal(out.response.status, 500);
+    assert.deepEqual(out.errors, ['businessDescription in Settings must describe the business']);
+    assert.equal(out.lead, null);
+  }
+  const both = validate(post(form), exported);
+  assert.deepEqual(
+    both.errors.map((e) => e.split(' ')[0]),
+    ['webhookSecret', 'businessDescription'],
+  );
+});
+
 test('validate: a filled honeypot looks like success to the bot but goes no further', () => {
   const out = validate(post({ ...form, Fax: 'http://spam.example' }));
   assert.equal(out.status, 'bot');
@@ -103,7 +118,7 @@ test('validate: lists every problem in the 400 response', () => {
     'company must be text',
     'message is required',
     'email is not a valid address',
-    'phone may only contain digits, spaces and + ( ) . / -',
+    'phone must be digits, optionally with spaces and + ( ) . / -',
     'website is not a valid domain or URL',
   ]);
 });
@@ -122,6 +137,20 @@ test('validate: rejects malformed addresses', () => {
   }
   for (const email of ['a+tag@c.example', 'first.last@sub.c-d.example', 'A@C.EXAMPLE'])
     assert.equal(validate(post({ email, message: 'x' })).status, 'accepted', email);
+});
+
+test('validate: a phone number needs at least one digit', () => {
+  for (const phone of ['-----', '(  ) / .', '+++++'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', phone })).status, 'invalid', phone);
+  for (const phone of ['+49 (30) 123-45', '030/12345'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', phone })).status, 'accepted', phone);
+});
+
+test('validate: website labels start and end with a letter or digit', () => {
+  for (const website of ['-example.com', 'example-.com', 'www.-x.example', 'https://a..example'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', website })).status, 'invalid', website);
+  for (const website of ['bakery-weber.example', 'https://www.a1.example:8080/path?q=1'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', website })).status, 'accepted', website);
 });
 
 test('validate: a body that is not an object gets 400', () => {

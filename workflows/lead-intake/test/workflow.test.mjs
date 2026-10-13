@@ -29,11 +29,12 @@ test('the webhook answers through Respond, right after validation', () => {
   assert.deepEqual(next('Respond'), ['Accepted?']);
   assert.deepEqual(next('Accepted?', 0), ['Find contact']);
   assert.deepEqual(next('Accepted?', 1), ['Not configured?']);
-  assert.deepEqual(next('Not configured?', 0), ['Report missing secret']);
+  assert.deepEqual(next('Not configured?', 0), ['Report missing settings']);
 });
 
-test('the exported secret is a placeholder the workflow refuses', () => {
+test('the exported secret and business description are placeholders the workflow refuses', () => {
   assert.match(settings.webhookSecret, /^REPLACE/);
+  assert.match(settings.businessDescription, /^REPLACE/);
   assert.equal(settings.secretQueryParam, '', 'secrets in URLs end up in logs, so this is opt-in');
   assert.ok(settings.fields.email.length && settings.fields.message.length);
   assert.ok(!settings.fields.email.includes(settings.honeypotField));
@@ -49,25 +50,35 @@ test('Ask Claude retries, times out and hands failures on instead of stopping', 
   assert.equal(ask.credentials.httpHeaderAuth.id, '');
 });
 
-test('HubSpot calls retry, time out, and stop the run when they still fail', () => {
-  for (const name of ['Find contact', 'Upsert contact']) {
+test('HubSpot calls time out and stop the run when they fail; only idempotent ones retry', () => {
+  for (const name of ['Find contact', 'Upsert contact', 'Add note']) {
     const n = byName[name];
     assert.match(n.parameters.url, /^https:\/\/api\.hubapi\.com\/crm\/v3\/objects\//, name);
     assert.equal(n.parameters.nodeCredentialType, 'hubspotAppToken', name);
-    assert.equal(n.retryOnFail, true, name);
-    assert.ok(n.waitBetweenTries > 0 && n.waitBetweenTries <= 5000, name);
     assert.ok(n.parameters.options.timeout > 0, name);
     assert.equal(n.onError, undefined, `${name} must fail the run so the error workflow reports it`);
   }
+  for (const name of ['Find contact', 'Upsert contact']) {
+    assert.equal(byName[name].retryOnFail, true, name);
+    assert.ok(byName[name].waitBetweenTries > 0 && byName[name].waitBetweenTries <= 5000, name);
+  }
+  assert.ok(!byName['Add note'].retryOnFail, 'a retried create after a lost response adds a second note');
   assert.match(byName['Upsert contact'].parameters.url, /\/contacts\/batch\/upsert$/);
 });
 
-test('spam goes nowhere near HubSpot', () => {
+test('spam goes nowhere near HubSpot or Slack', () => {
   assert.deepEqual(next('Parse qualification'), ['Spam?']);
   assert.deepEqual(next('Spam?', 0), ['Skip spam']);
   assert.deepEqual(next('Skip spam'), []);
   assert.deepEqual(next('Spam?', 1), ['Build contact']);
   assert.match(byName['Spam?'].parameters.conditions.conditions[0].leftValue, /!\$json\.needs_review/);
+});
+
+test('Slack only posts the escaped text built in Build note', () => {
+  assert.deepEqual(next('Add note'), ['Alert?']);
+  assert.deepEqual(next('Alert?', 0), ['Alert on Slack']);
+  assert.equal(byName['Alert on Slack'].parameters.text, "={{ $('Build note').item.json.slackText }}");
+  assert.equal(byName['Alert on Slack'].parameters.otherOptions.includeLinkToWorkflow, false);
 });
 
 test('hot score threshold and HubSpot property names are configured', () => {

@@ -34,7 +34,9 @@ const settings = {
     scoreProperty: 'ai_lead_score',
     intentProperty: 'ai_lead_intent',
     hotLifecycleStage: 'marketingqualifiedlead',
+    contactUrl: 'https://app.hubspot.com/contacts/YOUR_PORTAL_ID/record/0-1/',
   },
+  slackChannel: '#sales-leads',
 };
 
 const hubspotAuth = {
@@ -48,7 +50,7 @@ const hubspotCredential = credential('hubspotAppToken', 'HubSpot private app tok
 // error workflow reports it, and the lead is in the execution data to re-run from.
 const hubspotRetry = { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 };
 
-const hubspotPost = (name, position, path, jsonBody) =>
+const hubspotPost = (name, position, path, jsonBody, retry = hubspotRetry) =>
   node(name, 'n8n-nodes-base.httpRequest', 4.5, position, {
     parameters: {
       method: 'POST',
@@ -60,7 +62,7 @@ const hubspotPost = (name, position, path, jsonBody) =>
       options: { timeout: 20000 },
     },
     credentials: hubspotCredential,
-    ...hubspotRetry,
+    ...retry,
   });
 
 const searchBody = `={{ JSON.stringify({
@@ -104,7 +106,7 @@ const nodes = [
   }),
 
   // The form already got a 500. This makes the run fail as well, so the error workflow reports it.
-  node('Report missing secret', 'n8n-nodes-base.stopAndError', 1, [1320, 460], {
+  node('Report missing settings', 'n8n-nodes-base.stopAndError', 1, [1320, 460], {
     parameters: { errorMessage: '={{ $json.errors.join("; ") }}' },
   }),
 
@@ -160,6 +162,34 @@ const nodes = [
     '/crm/v3/objects/contacts/batch/upsert',
     '={{ JSON.stringify($json.upsert) }}',
   ),
+
+  node('Build note', 'n8n-nodes-base.code', 2, [2640, 320], {
+    parameters: { jsCode: read('src/build-note.js') },
+  }),
+
+  // Creating a note is not idempotent: a retry after a lost response would add a second note, so
+  // this call is not retried. A failure stops the run like the other HubSpot calls.
+  hubspotPost('Add note', [2860, 320], '/crm/v3/objects/notes', '={{ JSON.stringify($json.note) }}', {}),
+
+  node('Alert?', 'n8n-nodes-base.if', 2.2, [3080, 320], {
+    parameters: ifCondition('alert', "={{ $('Build note').item.json.alert }}", '', {
+      type: 'string',
+      operation: 'notEmpty',
+      singleValue: true,
+    }),
+  }),
+
+  node('Alert on Slack', 'n8n-nodes-base.slack', 2.7, [3300, 300], {
+    parameters: {
+      resource: 'message',
+      operation: 'post',
+      select: 'channel',
+      channelId: { __rl: true, mode: 'name', value: "={{ $('Settings').first().json.slackChannel }}" },
+      text: "={{ $('Build note').item.json.slackText }}",
+      otherOptions: { includeLinkToWorkflow: false },
+    },
+    credentials: credential('slackApi', 'Slack account'),
+  }),
 ];
 
 const connections = {
@@ -168,13 +198,17 @@ const connections = {
   'Validate lead': link('Respond'),
   Respond: link('Accepted?'),
   'Accepted?': link('Find contact', 'Not configured?'),
-  'Not configured?': link('Report missing secret', null),
+  'Not configured?': link('Report missing settings', null),
   'Find contact': link('Prepare qualification'),
   'Prepare qualification': link('Ask Claude'),
   'Ask Claude': link('Parse qualification'),
   'Parse qualification': link('Spam?'),
   'Spam?': link('Skip spam', 'Build contact'),
   'Build contact': link('Upsert contact'),
+  'Upsert contact': link('Build note'),
+  'Build note': link('Add note'),
+  'Add note': link('Alert?'),
+  'Alert?': link('Alert on Slack', null),
 };
 
 writeWorkflow(import.meta.url, 'workflow.json', workflow('Website lead intake (HubSpot + Claude)', nodes, connections));

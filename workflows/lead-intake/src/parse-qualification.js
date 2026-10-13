@@ -1,7 +1,7 @@
 // @ts-check
 // n8n Code node "Parse qualification" (mode: run once for all items).
 // Turns Claude's reply into a validated qualification. A failed call or a malformed reply sets
-// needs_review: the lead is still saved to HubSpot, without score or intent, for a human to check.
+// needs_review: the lead is still saved to HubSpot, without score or intent, and a human is told.
 // The reply is not trusted either: the form it was generated from may contain instructions aimed
 // at the model, so every field is checked or clamped here, whatever the model says.
 
@@ -54,16 +54,19 @@ function text(value, max) {
   );
 }
 
+/** Lower case words and numbers only, so "12.000 EUR" and "12,000 eur" compare equal. */
+const words = (/** @type {string} */ s) => (s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(' ');
+
 /**
- * True if every number in the model's value also appears in what the visitor wrote, so a budget
- * the model made up or "corrected" is dropped instead of stored.
+ * True if the model's value appears as a phrase in one of the visitor's fields, ignoring case and
+ * punctuation. The prompt asks for budget and timeline exactly as written, so a value the model
+ * made up, "corrected" or assembled from words in different places is dropped instead of stored.
  * @param {string} value
- * @param {string} source
+ * @param {string[]} sources
  */
-function numbersFrom(value, source) {
-  const digits = (/** @type {string} */ s) => (s.match(/\d+/g) ?? []).map((n) => n.replace(/^0+(?=\d)/, ''));
-  const known = new Set(digits(source.replace(/(\d)[.,'\s](?=\d{3}\b)/g, '$1')));
-  return digits(value.replace(/(\d)[.,'\s](?=\d{3}\b)/g, '$1')).every((n) => known.has(n));
+function statedIn(value, sources) {
+  const phrase = words(value);
+  return phrase !== '' && sources.some((s) => ` ${words(s)} `.includes(` ${phrase} `));
 }
 
 /**
@@ -86,8 +89,10 @@ function qualify(res, lead) {
   if (!intentOk) problems.push(`intent ${JSON.stringify(raw.intent)}`);
   const summary = text(raw.summary, MAX.summary);
   if (!summary) problems.push('summary missing');
+  const nextStep = text(raw.next_step, MAX.next_step);
+  if (!nextStep) problems.push('next_step missing');
 
-  const source = `${lead.message} ${lead.company}`;
+  const sources = [lead.message, lead.company];
   const budget = text(raw.budget, MAX.budget);
   const timeline = text(raw.timeline, MAX.timeline);
   const valid = problems.length === 0;
@@ -96,10 +101,10 @@ function qualify(res, lead) {
     qualification: {
       fit_score: valid ? (raw.intent === 'spam' ? 0 : raw.fit_score) : null,
       intent: valid ? raw.intent : '',
-      budget: budget && numbersFrom(budget, source) ? budget : '',
-      timeline: timeline && numbersFrom(timeline, source) ? timeline : '',
+      budget: statedIn(budget, sources) ? budget : '',
+      timeline: statedIn(timeline, sources) ? timeline : '',
       summary,
-      next_step: text(raw.next_step, MAX.next_step),
+      next_step: nextStep,
     },
   };
 }

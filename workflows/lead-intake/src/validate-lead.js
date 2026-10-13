@@ -14,6 +14,7 @@
  *
  * @typedef {object} Settings
  * @property {string} webhookSecret
+ * @property {string} businessDescription checked here so a placeholder never reaches Claude
  * @property {string} secretHeader
  * @property {string} [secretQueryParam] '' disables the query parameter
  * @property {string} honeypotField
@@ -47,8 +48,8 @@ const MAX_CHARS = {
 };
 const MIN_SECRET_CHARS = 16;
 const EMAIL = /^[^\s@<>()[\]\\,;:"]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
-const PHONE = /^[0-9+()./\s-]{5,40}$/;
-const WEBSITE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,63}(:\d+)?(\/\S*)?$/i;
+const PHONE = /^(?=.*\d)[0-9+()./\s-]{5,40}$/;
+const WEBSITE = /^(https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(:\d+)?(\/\S*)?$/i;
 
 /**
  * Compares in time that depends only on the expected secret's length, so response times do not
@@ -104,15 +105,14 @@ const invalid = (errors) => outcome('invalid', 400, { ok: false, errors }, { err
  */
 function validate(req, settings) {
   const secret = String(settings.webhookSecret ?? '');
+  const business = String(settings.businessDescription ?? '').trim();
+  const config = [];
   if (secret.length < MIN_SECRET_CHARS || secret.startsWith('REPLACE'))
-    return outcome(
-      'misconfigured',
-      500,
-      { ok: false, error: 'server not configured' },
-      {
-        errors: [`webhookSecret in Settings must be set to a random string of at least ${MIN_SECRET_CHARS} characters`],
-      },
-    );
+    config.push(`webhookSecret in Settings must be set to a random string of at least ${MIN_SECRET_CHARS} characters`);
+  if (!business || business.startsWith('REPLACE'))
+    config.push('businessDescription in Settings must describe the business');
+  if (config.length)
+    return outcome('misconfigured', 500, { ok: false, error: 'server not configured' }, { errors: config });
   const header = req.headers?.[settings.secretHeader.toLowerCase()];
   const query = settings.secretQueryParam ? req.query?.[settings.secretQueryParam] : undefined;
   const given = typeof header === 'string' ? header : typeof query === 'string' ? query : '';
@@ -154,7 +154,7 @@ function validate(req, settings) {
     if (!raw[field] && !errors.includes(`${field} must be text`)) errors.push(`${field} is required`);
   const email = raw.email.toLowerCase();
   if (email && (!EMAIL.test(email) || /^\.|\.\.|\.@/.test(email))) errors.push('email is not a valid address');
-  if (raw.phone && !PHONE.test(raw.phone)) errors.push('phone may only contain digits, spaces and + ( ) . / -');
+  if (raw.phone && !PHONE.test(raw.phone)) errors.push('phone must be digits, optionally with spaces and + ( ) . / -');
   if (raw.website && !WEBSITE.test(raw.website)) errors.push('website is not a valid domain or URL');
   if (errors.length) return invalid(errors);
 

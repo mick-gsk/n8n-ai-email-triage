@@ -46,6 +46,21 @@ test('build contact: lifecycle stage only moves forward', () => {
   assert.equal(withStage('some_custom_stage', true), undefined);
 });
 
+test('build contact: a hot lifecycle stage outside the default stages fails the node', () => {
+  for (const hotLifecycleStage of ['hot_lead_custom', '', 'other']) {
+    const s = { ...settings, hubspot: { ...settings.hubspot, hotLifecycleStage } };
+    assert.throws(
+      () => buildContact(qualified({}, { hot: true }), s),
+      /hubspot\.hotLifecycleStage in Settings must be one of/,
+    );
+  }
+  const s = { ...settings, hubspot: { ...settings.hubspot, hotLifecycleStage: 'salesqualifiedlead' } };
+  assert.equal(
+    props(qualified({}, { hot: true, contact: { id: '1', lifecyclestage: 'lead' } }), s).lifecyclestage,
+    'salesqualifiedlead',
+  );
+});
+
 test('build contact: support, job and partner messages do not touch the stage', () => {
   for (const intent of ['support', 'job', 'partner']) {
     const p = props(qualified({ intent, fit_score: 20 }));
