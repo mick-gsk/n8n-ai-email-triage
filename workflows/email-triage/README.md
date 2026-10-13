@@ -14,7 +14,8 @@ flowchart LR
     R --> L[Add Gmail label]
     R --> H{High priority?} -- yes --> SL[Alert on Slack]
     R --> N{Needs reply?} -- yes --> D[Create reply draft]
-    R --> G[Log to Google Sheets] --> M[Mark as triaged]
+    R --> G[Log to Google Sheets]
+    R --> M[Mark as triaged]
 ```
 
 1. Gmail Trigger picks up unread emails in the inbox (checks every minute).
@@ -28,8 +29,9 @@ flowchart LR
 5. Then the email is labelled (Support, Sales, Billing, Partnership, Job, Newsletter, Spam or Review),
    high-priority mail is posted to Slack, a draft is added to the Gmail thread if a reply is needed, and
    one row is appended to the log sheet.
-6. Mark as triaged adds the done label. It runs last and only if every step before it succeeded, so
-   an email whose run failed halfway is picked up again by a manual re-run.
+6. Mark as triaged adds the done label. It is the lowest branch, so it runs last and only if every
+   step before it succeeded, and an email whose run failed halfway is picked up again by a manual
+   re-run.
 
 The shared error workflow in [`shared/error-alert`](../../shared/error-alert) posts to Slack when a run fails outright.
 
@@ -37,7 +39,7 @@ The shared error workflow in [`shared/error-alert`](../../shared/error-alert) po
 
 1. In n8n: **Workflows → Import from file → `workflow.json`**.
 2. Create credentials and select them in the nodes:
-   - Gmail OAuth2 (Gmail Trigger, Add Gmail label, Create reply draft)
+   - Gmail OAuth2 (Gmail Trigger, Add Gmail label, Create reply draft, Mark as triaged)
    - Header Auth for Anthropic: name `x-api-key`, value your API key (Ask Claude)
    - Slack and Google Sheets OAuth2 (optional; delete those nodes if you do not need them)
 3. Fill in the Settings node (see [Configuration](#configuration)). Create the Gmail labels first; their
@@ -75,9 +77,9 @@ tries, polling every minute.
 - Emails are untrusted input. The email goes to Claude inside `<email>` tags with any such tags removed
   from its text, and the prompt says instructions in it are not to be followed. The parser does not rely
   on that: it only accepts known categories and priorities, forces spam to low priority, never drafts for
-  spam or newsletters, and drops any draft that contains a link (anything with a scheme such as
-  `https://`, `www.`, or a domain followed by a path) or an IBAN-shaped number, since the model has
-  neither unless the email put it there. Sender, subject and summary are escaped in Slack (no `<!channel>` pings) and
+  spam or newsletters, and drops any draft that contains a link (a scheme such as `https://` or
+  `mailto:`, `www.`, or a domain followed by a path) or an IBAN (checked with the IBAN checksum),
+  since the model has neither unless the email put it there. Sender, subject and summary are escaped in Slack (no `<!channel>` pings) and
   written to Sheets as plain values (no formulas).
 - Failures are visible. A failed Claude call becomes a Review item with the API error in the log. Any
   other failure (expired token, wrong label ID) stops the run and the error workflow reports it.
@@ -110,8 +112,9 @@ tries, polling every minute.
   appear twice.
 - Attachments are ignored and only the first 6,000 characters of the body are read.
 - Prompt injection is mitigated, not ruled out: an email can still nudge category or priority. The draft
-  check catches the link and IBAN shapes above; a bare domain (`evil.example`) or another kind of
-  account number gets through. Escaping keeps it from pinging Slack or running formulas in Sheets.
+  check catches the links and IBANs above; a bare domain (`evil.example`), an IBAN with a typo or
+  another kind of account number gets through, and now and then an order or reference number that
+  happens to pass the IBAN checksum sends a harmless draft to review. Escaping keeps it from pinging Slack or running formulas in Sheets.
 
 ## Tests
 

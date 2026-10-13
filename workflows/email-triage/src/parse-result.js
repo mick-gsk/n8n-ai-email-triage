@@ -10,27 +10,42 @@ const NO_REPLY = ['newsletter', 'spam'];
 const MAX_DRAFT_CHARS = 2000;
 // The model has no links or bank details of its own, so if one shows up in a draft it was
 // copied from the email or made up. Either way the draft is dropped and a human takes a look.
-// Links: any scheme (https://, ftp://), www., or a domain followed by a path (evil.example/pay).
-const LINK = /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\//i;
-// IBAN-shaped: country code, check digits, 11 to 30 more characters, in any case and with
-// spaces, dashes or dots between them. Real IBANs are mostly digits with at most four letters
-// in a row (bank codes like WEST), which keeps ordinary sentences from matching.
+// Links: a scheme with // (https://, ftp://), mailto:, tel:, sms:, data: or javascript: URIs,
+// www., or a domain followed by a path (evil.example/pay).
+const LINK =
+  /\b[a-z][a-z0-9+.-]*:\/\/|\b(?:mailto:[^\s@]+@|tel:\+?\d|sms:\+?\d|data:[a-z]+\/|javascript:)|\bwww\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\//i;
+// IBANs: country code and check digits, then letters and digits, in any case and with spaces,
+// dashes or dots between them. Such a run counts as an IBAN when it starts with 15 to 34 characters
+// that pass the IBAN checksum and hold at least 10 digits, so trailing words do not hide one and
+// an ordinary sentence that starts like one ("de12 thanks for order 4711") rarely matches.
 const IBAN_CANDIDATE = /\b[a-z]{2}\d{2}(?:[ .-]?[a-z0-9])+/gi;
 
+/** @param {string} iban letters and digits only, upper case */
+function passesChecksum(iban) {
+  let rest = 0;
+  for (const char of iban.slice(4) + iban.slice(0, 4)) {
+    const value = char <= '9' ? char : String(char.charCodeAt(0) - 55);
+    for (const digit of value) rest = (rest * 10 + Number(digit)) % 97;
+  }
+  return rest === 1;
+}
+
 /** @param {string} candidate */
-function looksLikeIban(candidate) {
-  // The match runs on into the following words ("... 00 invoice 2"), so it is cut where five
-  // letters in a row start, then trailing letters are dropped and at most 30 characters kept.
-  let bban = candidate.replace(/[ .-]/g, '').slice(4);
-  const word = bban.search(/[a-z]{5}/i);
-  if (word !== -1) bban = bban.slice(0, word);
-  bban = bban.replace(/[a-z]+$/i, '').slice(0, 30);
-  return bban.length >= 11 && (bban.match(/\d/g) ?? []).length >= 8;
+function containsIban(candidate) {
+  // Try the run up to the end of each group ("DE89", "DE893704", ...), since an IBAN ends where
+  // a group ends and the words after it are not part of it.
+  let iban = '';
+  for (const group of candidate.toUpperCase().split(/[ .-]/)) {
+    iban += group;
+    if (iban.length > 34) break;
+    if (iban.length >= 15 && (iban.match(/\d/g) ?? []).length >= 10 && passesChecksum(iban)) return true;
+  }
+  return false;
 }
 
 /** @param {string} text */
 function isSuspiciousDraft(text) {
-  return LINK.test(text) || [...text.matchAll(IBAN_CANDIDATE)].some((m) => looksLikeIban(m[0]));
+  return LINK.test(text) || [...text.matchAll(IBAN_CANDIDATE)].some((m) => containsIban(m[0]));
 }
 
 /**

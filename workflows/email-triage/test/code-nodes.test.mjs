@@ -191,6 +191,8 @@ test('parse: IBANs are caught in any case and with any separator', () => {
     'DE89370400440532013000',
     'gb82.west.1234.5698.7654.32',
     'DE89 3704 0044 0532 0130 00 invoice 2',
+    'KW12CBKUA123456789012345678901',
+    'NO9386011117947',
   ]) {
     const draft = `Please pay to ${iban}, thanks.`;
     const [out] = parse([
@@ -202,7 +204,15 @@ test('parse: IBANs are caught in any case and with any separator', () => {
 });
 
 test('parse: links without https are caught too', () => {
-  for (const link of ['ftp://evil.example', 'evil.example/pay', 'WWW.evil.example']) {
+  for (const link of [
+    'ftp://evil.example',
+    'evil.example/pay',
+    'WWW.evil.example',
+    'mailto:billing@evil.example',
+    'tel:+491701234567',
+    'data:text/html,hi',
+    'javascript:alert(1)',
+  ]) {
     const [out] = parse([
       JSON.stringify({
         category: 'support',
@@ -217,7 +227,9 @@ test('parse: links without https are caught too', () => {
 });
 
 test('parse: ordinary drafts are not mistaken for links or IBANs', () => {
-  const draft = 'Hi Anna, de12 thanks for your order 4711 from 03.10.2026, e.g. the blue one. It ships on Monday.';
+  const draft =
+    'Hi Anna, de12 thanks for your order 4711 from 03.10.2026, e.g. the blue one. Your data: attached as discussed. ' +
+    'Call us on +49 170 1234567 or note: it ships on Monday. Ref DE12 2024 0001 1234 5678 is your order number.';
   const [out] = parse([
     JSON.stringify({ category: 'sales', priority: 'normal', summary: 'x', needs_reply: true, draft_reply: draft }),
   ]);

@@ -74,8 +74,8 @@ test('the done label is added last, after every branch of Parse AI result', () =
   // Execution order v1 runs the branches top to bottom, so the marker has to sit on the lowest one.
   const branches = workflow.connections['Parse AI result'].main[0].map((c) => byName[c.node]);
   const lowest = branches.reduce((a, b) => (b.position[1] > a.position[1] ? b : a));
-  assert.equal(lowest.name, 'Log to Google Sheets');
-  assert.equal(workflow.connections['Log to Google Sheets'].main[0][0].node, 'Mark as triaged');
+  assert.equal(lowest.name, 'Mark as triaged');
+  assert.equal(workflow.connections['Mark as triaged'], undefined);
   assert.equal(workflow.settings.executionOrder, 'v1');
   const settings = JSON.parse(byName.Settings.parameters.jsonOutput);
   assert.ok(settings.doneLabel);
