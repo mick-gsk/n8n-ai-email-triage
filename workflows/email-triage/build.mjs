@@ -1,13 +1,10 @@
-// Builds workflow.json and error-workflow.json from the sources in src/, so the Code node
-// logic and the prompt live in normal files that can be reviewed and tested.
+// Builds workflow.json from the sources in src/, so the Code node logic and the prompt live in
+// normal files that can be reviewed and tested.
 //
-//   node scripts/build-workflow.mjs
-import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+//   node workflows/email-triage/build.mjs   (or npm run build for all workflows)
+import { credential, ifCondition, link, node, reader, slackSafe, workflow, writeWorkflow } from '../../lib/n8n.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const read = (p) => readFileSync(join(root, p), 'utf8');
+const read = reader(import.meta.url);
 
 // Replace these placeholders after import (see README, "Setup").
 const settings = {
@@ -27,33 +24,8 @@ const settings = {
   sheetId: 'YOUR_GOOGLE_SHEET_ID',
 };
 
-const gmail = { gmailOAuth2: { id: '', name: 'Gmail account' } };
-const slack = { slackApi: { id: '', name: 'Slack account' } };
-
-// node('Name', 'type', typeVersion, [x, y], { parameters, ...other node fields })
-const node = (name, type, typeVersion, position, { parameters = {}, ...extra } = {}) => ({
-  id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-  name,
-  type,
-  typeVersion,
-  position,
-  parameters,
-  ...extra,
-});
-
-const ifCondition = (id, leftValue, rightValue, operator) => ({
-  conditions: {
-    options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
-    conditions: [{ id, leftValue, rightValue, operator }],
-    combinator: 'and',
-  },
-  options: {},
-});
-
-// Sender, subject and summary come from outside. Slack treats <!channel>, <!here> and <url|text>
-// in message text as mentions and links, so &, < and > are escaped as its docs require.
-const slackSafe = (field) =>
-  `{{ String($json.${field}).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}`;
+const gmail = credential('gmailOAuth2', 'Gmail account');
+const slack = credential('slackApi', 'Slack account');
 
 const logColumns = [
   'processedAt',
@@ -100,7 +72,7 @@ const nodes = [
       jsonBody: '={{ JSON.stringify($json.request) }}',
       options: { batching: { batch: { batchSize: 5, batchInterval: 1000 } }, timeout: 60000 },
     },
-    credentials: { httpHeaderAuth: { id: '', name: 'Anthropic API key (x-api-key)' } },
+    credentials: credential('httpHeaderAuth', 'Anthropic API key (x-api-key)'),
     // n8n retries a node that continues on error only when its first output item is an error,
     // and then re-runs the whole batch. Fixed waits only; 5 tries and 5 s are n8n's maximums.
     // Whatever still fails reaches Parse AI result as { error } and is labelled for review.
@@ -182,67 +154,18 @@ const nodes = [
       // RAW: a subject like =IMPORTXML(...) is stored as text instead of being run as a formula.
       options: { cellFormat: 'RAW' },
     },
-    credentials: { googleSheetsOAuth2Api: { id: '', name: 'Google Sheets account' } },
+    credentials: credential('googleSheetsOAuth2Api', 'Google Sheets account'),
   }),
 ];
 
-// link('A', null, ['B', 'C']): output 0 goes to A, output 1 nowhere, output 2 to B and C.
-const link = (...outputs) => ({
-  main: outputs.map((t) => (t ? [t].flat().map((n) => ({ node: n, type: 'main', index: 0 })) : [])),
-});
-
-const workflow = {
-  name: 'AI Email Triage (Gmail + Claude)',
-  nodes,
-  connections: {
-    'Gmail Trigger': link('Settings'),
-    Settings: link('Prepare email'),
-    'Prepare email': link('Ask Claude'),
-    'Ask Claude': link('Parse AI result'),
-    'Parse AI result': link(['Add Gmail label', 'High priority?', 'Needs reply?', 'Log to Google Sheets']),
-    'High priority?': link('Alert on Slack', null),
-    'Needs reply?': link('Create reply draft', null),
-  },
-  settings: { executionOrder: 'v1' },
-  pinData: {},
-  meta: { templateCredsSetupCompleted: false },
+const connections = {
+  'Gmail Trigger': link('Settings'),
+  Settings: link('Prepare email'),
+  'Prepare email': link('Ask Claude'),
+  'Ask Claude': link('Parse AI result'),
+  'Parse AI result': link(['Add Gmail label', 'High priority?', 'Needs reply?', 'Log to Google Sheets']),
+  'High priority?': link('Alert on Slack', null),
+  'Needs reply?': link('Create reply draft', null),
 };
 
-// Posts to Slack when the main workflow fails outright (a Gmail, Slack or Sheets call, or a
-// Code node, throws). Failed Claude calls do not end up here; they are labelled for review.
-// n8n assigns workflow IDs on import, so the link is made by hand in the workflow settings.
-const errorWorkflow = {
-  name: 'AI Email Triage: error alert',
-  nodes: [
-    node('Error Trigger', 'n8n-nodes-base.errorTrigger', 1, [0, 300]),
-    node('Format alert', 'n8n-nodes-base.code', 2, [220, 300], {
-      parameters: { jsCode: read('src/format-error-alert.js') },
-    }),
-    node('Post to Slack', 'n8n-nodes-base.slack', 2.2, [440, 300], {
-      parameters: {
-        resource: 'message',
-        operation: 'post',
-        select: 'channel',
-        channelId: { __rl: true, mode: 'name', value: settings.slackChannel },
-        text: '={{ $json.text }}',
-        otherOptions: { includeLinkToWorkflow: false },
-      },
-      credentials: slack,
-    }),
-  ],
-  connections: {
-    'Error Trigger': link('Format alert'),
-    'Format alert': link('Post to Slack'),
-  },
-  settings: { executionOrder: 'v1' },
-  pinData: {},
-  meta: { templateCredsSetupCompleted: false },
-};
-
-for (const [file, wf] of [
-  ['workflow.json', workflow],
-  ['error-workflow.json', errorWorkflow],
-]) {
-  writeFileSync(join(root, file), JSON.stringify(wf, null, 2) + '\n');
-  console.log(`${file}: ${wf.nodes.length} nodes`);
-}
+writeWorkflow(import.meta.url, 'workflow.json', workflow('AI Email Triage (Gmail + Claude)', nodes, connections));

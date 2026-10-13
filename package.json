@@ -1,17 +1,17 @@
 {
-  "name": "n8n-ai-email-triage",
+  "name": "n8n-ai-workflows",
   "version": "1.0.0",
-  "description": "n8n workflow that sorts Gmail with Claude: labels, Slack alerts for urgent mail, reply drafts and a Google Sheets log.",
+  "description": "A collection of production-ready n8n workflows with AI steps: email triage, and more, each tested and checked against a real n8n instance.",
   "license": "MIT",
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "node scripts/build-workflow.mjs",
-    "test": "node scripts/build-workflow.mjs && node --test test/*.test.mjs",
-    "lint": "eslint . && prettier --check \"src/**/*.{js,ts}\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"eval/**/*.mjs\" eslint.config.js",
-    "format": "prettier --write \"src/**/*.{js,ts}\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"eval/**/*.mjs\" eslint.config.js",
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs shared/*/test/*.test.mjs workflows/*/test/*.test.mjs",
+    "lint": "eslint . && prettier --check \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
+    "format": "prettier --write \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
     "typecheck": "tsc -p .",
-    "eval": "node eval/run.mjs"
+    "eval:email-triage": "node workflows/email-triage/eval/run.mjs"
   },
   "engines": {
     "node": ">=20"

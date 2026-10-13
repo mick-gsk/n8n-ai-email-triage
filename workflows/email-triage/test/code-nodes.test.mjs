@@ -2,19 +2,21 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { runCodeNode } from './run-code-node.mjs';
+import { runCodeNode } from '../../../lib/run-code-node.mjs';
+
+const src = (file) => new URL(`../src/${file}`, import.meta.url);
 
 const emails = JSON.parse(readFileSync(new URL('./fixtures/emails.json', import.meta.url), 'utf8'));
 const settings = { model: 'claude-haiku-5-5', systemPrompt: 'SORT EMAIL' };
 
 function prepare() {
-  return runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': emails, Settings: [settings] } });
+  return runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': emails, Settings: [settings] } });
 }
 
 function parse(replies) {
   const prepared = prepare();
   const input = replies.map((text) => (typeof text === 'string' ? { content: [{ type: 'text', text }] } : text));
-  return runCodeNode('parse-result.js', { input, nodes: { 'Prepare email': prepared } });
+  return runCodeNode(src('parse-result.js'), { input, nodes: { 'Prepare email': prepared } });
 }
 
 test('prepare: extracts sender, subject and whitespace-normalised body', () => {
@@ -66,7 +68,7 @@ test('prepare: skips mail that already has a triage label', () => {
     { ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_1'] },
     { ...emails[1], labelIds: ['INBOX', 'UNREAD'] },
   ];
-  const out = runCodeNode('prepare-email.js', {
+  const out = runCodeNode(src('prepare-email.js'), {
     nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, labels }] },
   });
   assert.deepEqual(
@@ -83,14 +85,14 @@ test('prepare: turns off thinking so the reply fits in max_tokens', () => {
 
 test('prepare: caps sender and subject length', () => {
   const long = [{ ...emails[0], subject: 's'.repeat(5000), from: { text: 'f'.repeat(5000) } }];
-  const [out] = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
+  const [out] = runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
   assert.equal(out.email.subject.length, 300);
   assert.equal(out.email.from.length, 300);
 });
 
 test('prepare: truncates very long emails', () => {
   const long = [{ ...emails[0], text: 'x'.repeat(20000) }];
-  const [out] = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
+  const [out] = runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
   assert.equal(out.email.body.length, 6000);
 });
 

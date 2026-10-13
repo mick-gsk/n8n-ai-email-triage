@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { runCodeNode } from './run-code-node.mjs';
+import { runCodeNode } from '../../../lib/run-code-node.mjs';
 
-const workflow = JSON.parse(readFileSync(new URL('../error-workflow.json', import.meta.url), 'utf8'));
+const src = (file) => new URL(`../src/${file}`, import.meta.url);
+
+const workflow = JSON.parse(readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
 const byName = Object.fromEntries(workflow.nodes.map((n) => [n.name, n]));
 
 // Shape of the Error Trigger output, taken from the node's own example data.
@@ -19,7 +21,7 @@ const nodeFailed = {
   workflow: { id: '7', name: 'AI Email Triage (Gmail + Claude)' },
 };
 
-const format = (items) => runCodeNode('format-error-alert.js', { input: items });
+const format = (items) => runCodeNode(src('format-error-alert.js'), { input: items });
 
 test('error workflow: Error Trigger -> Format alert -> Post to Slack', () => {
   assert.equal(byName['Error Trigger'].type, 'n8n-nodes-base.errorTrigger');
@@ -29,10 +31,7 @@ test('error workflow: Error Trigger -> Format alert -> Post to Slack', () => {
 });
 
 test('error workflow: in sync with src/ and no credentials stored', () => {
-  assert.equal(
-    byName['Format alert'].parameters.jsCode,
-    readFileSync(new URL('../src/format-error-alert.js', import.meta.url), 'utf8'),
-  );
+  assert.equal(byName['Format alert'].parameters.jsCode, readFileSync(src('format-error-alert.js'), 'utf8'));
   for (const n of workflow.nodes) for (const c of Object.values(n.credentials ?? {})) assert.equal(c.id, '');
 });
 
