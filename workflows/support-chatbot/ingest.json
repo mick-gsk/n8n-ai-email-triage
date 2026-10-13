@@ -1,0 +1,431 @@
+{
+  "name": "Support chatbot: ingest Drive documents",
+  "nodes": [
+    {
+      "id": "drive-trigger",
+      "name": "Drive Trigger",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 10,
+              "unit": "minutes"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID"
+        },
+        "event": "fileUpdated",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "nightly-sync",
+      "name": "Nightly sync",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        460
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sync-now",
+      "name": "Sync now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        620
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "list-folder",
+      "name": "List folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        220,
+        540
+      ],
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "name",
+        "queryString": "",
+        "returnAll": true,
+        "filter": {
+          "folderId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_DRIVE_FOLDER_ID"
+          },
+          "whatToSearch": "files",
+          "includeTrashed": false
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType",
+            "webViewLink",
+            "trashed"
+          ]
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "",
+          "name": "Google Drive account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "forget-removed-files",
+      "name": "Forget removed files",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        460,
+        660
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH removed AS (\n  DELETE FROM support_chunks\n  WHERE NOT (metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb)))\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($('List folder').all().map((i) => i.json.id)) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres (support bot)"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "select-files",
+      "name": "Select files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Select files\" (mode: run once for all items).\n// Takes Google Drive file records (from the trigger or the folder listing) and keeps the ones the\n// loader can read, with the fields stored on every chunk. File names come from whoever can edit\n// the folder and are shown to customers as sources, so they are cleaned and shortened here.\nconst MAX_BYTES = 10 * 1024 * 1024;\nconst MAX_NAME_CHARS = 200;\nconst SUPPORTED = new Set([\n  'application/vnd.google-apps.document', // exported as Markdown by \"Download file\"\n  'application/pdf',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'text/plain',\n  'text/markdown',\n]);\n\n/**\n * @typedef {object} DriveFile Google Drive file resource (fields used here).\n * @property {string} id\n * @property {string} [name]\n * @property {string} [mimeType]\n * @property {string} [webViewLink]\n * @property {string | number} [size] bytes; absent for Google Docs\n * @property {boolean} [trashed]\n *\n * @typedef {{ file_id: string, file_name: string, mime_type: string, source_url: string }} SelectedFile\n */\n\n/** @param {unknown} s */\nconst cleanName = (s) =>\n  String(s ?? '')\n    // eslint-disable-next-line no-control-regex\n    .replace(/[\\u0000-\\u001f\\u007f<>]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, MAX_NAME_CHARS);\n\n/** @param {DriveFile} f */\nconst readable = (f) => Boolean(f.id) && !f.trashed && SUPPORTED.has(f.mimeType ?? '') && !(Number(f.size) > MAX_BYTES);\n\nconst seen = new Set();\n/** @type {SelectedFile[]} */\nconst files = [];\nfor (const item of $input.all()) {\n  const f = /** @type {DriveFile} */ (item.json);\n  if (!readable(f) || seen.has(f.id)) continue;\n  seen.add(f.id);\n  files.push({\n    file_id: f.id,\n    file_name: cleanName(f.name) || f.id,\n    mime_type: f.mimeType ?? '',\n    source_url: /^https:\\/\\/(docs|drive)\\.google\\.com\\//.test(f.webViewLink ?? '') ? String(f.webViewLink) : '',\n  });\n}\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn files.map((json) => ({ json }));\n"
+      }
+    },
+    {
+      "id": "download-file",
+      "name": "Download file",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.file_id }}"
+        },
+        "options": {
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "text/markdown"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "",
+          "name": "Google Drive account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "store-chunks",
+      "name": "Store chunks",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "mode": "insert",
+        "tableName": "support_chunks",
+        "embeddingBatchSize": 100,
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres (support bot)"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "embeddings",
+      "name": "Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        820,
+        520
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "id": "document-loader",
+      "name": "Document loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        520
+      ],
+      "parameters": {
+        "dataType": "binary",
+        "binaryMode": "specificField",
+        "binaryDataKey": "data",
+        "loader": "auto",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "file_id",
+                "value": "={{ $('Select files').item.json.file_id }}"
+              },
+              {
+                "name": "file_name",
+                "value": "={{ $('Select files').item.json.file_name }}"
+              },
+              {
+                "name": "source_url",
+                "value": "={{ $('Select files').item.json.source_url }}"
+              },
+              {
+                "name": "ingest_run",
+                "value": "={{ $execution.id }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "text-splitter",
+      "name": "Text splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        700
+      ],
+      "parameters": {
+        "chunkSize": 1000,
+        "chunkOverlap": 150,
+        "options": {}
+      }
+    },
+    {
+      "id": "remove-old-chunks",
+      "name": "Remove old chunks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1140,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH removed AS (\n  DELETE FROM support_chunks\n  WHERE metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb))\n    AND metadata ->> 'ingest_run' IS DISTINCT FROM $2\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($('Select files').all().map((i) => i.json.file_id)), String($execution.id) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres (support bot)"
+        }
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Drive Trigger": {
+      "main": [
+        [
+          {
+            "node": "Select files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nightly sync": {
+      "main": [
+        [
+          {
+            "node": "List folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync now": {
+      "main": [
+        [
+          {
+            "node": "List folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List folder": {
+      "main": [
+        [
+          {
+            "node": "Select files",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Forget removed files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select files": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Store chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store chunks": {
+      "main": [
+        [
+          {
+            "node": "Remove old chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Store chunks",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Store chunks",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Document loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
