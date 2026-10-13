@@ -1,8 +1,8 @@
 // @ts-check
-// n8n Code node "Format alert" in error-workflow.json (mode: run once for all items).
+// n8n Code node "Format alert" in shared/error-alert/workflow.json (mode: run once for all items).
 // Turns the Error Trigger output into one Slack message. Error messages can quote email
 // content (a subject in a failed Gmail call, for example), so they are escaped like the
-// fields in the main workflow's alert.
+// fields in the workflow alerts.
 const MAX_MESSAGE_CHARS = 500;
 
 /**

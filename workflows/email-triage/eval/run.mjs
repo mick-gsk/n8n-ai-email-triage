@@ -3,7 +3,9 @@
 // Uses the same prompt and parsing code as the workflow.
 import { readFileSync } from 'node:fs';
 
-import { runCodeNode } from '../test/run-code-node.mjs';
+import { runCodeNode } from '../../../lib/run-code-node.mjs';
+
+const src = (file) => new URL(`../src/${file}`, import.meta.url);
 
 const key = process.env.ANTHROPIC_API_KEY;
 if (!key) {
@@ -21,7 +23,7 @@ const triggerItems = cases.map((c, i) => ({
   subject: c.subject,
   text: c.body,
 }));
-const prepared = runCodeNode('prepare-email.js', {
+const prepared = runCodeNode(src('prepare-email.js'), {
   nodes: { 'Gmail Trigger': triggerItems, Settings: [{ model, systemPrompt: prompt }] },
 });
 
@@ -34,7 +36,7 @@ for (const { request } of prepared) {
   });
   replies.push(await res.json());
 }
-const results = runCodeNode('parse-result.js', { input: replies, nodes: { 'Prepare email': prepared } });
+const results = runCodeNode(src('parse-result.js'), { input: replies, nodes: { 'Prepare email': prepared } });
 
 let category = 0;
 let priority = 0;

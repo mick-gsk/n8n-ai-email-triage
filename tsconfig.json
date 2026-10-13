@@ -8,5 +8,5 @@
     "lib": ["ES2022"],
     "types": []
   },
-  "include": ["src/**/*.js", "src/**/*.d.ts"]
+  "include": ["lib/n8n-globals.d.ts", "workflows/*/src/**/*.js", "shared/*/src/**/*.js"]
 }

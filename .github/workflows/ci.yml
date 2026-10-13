@@ -20,7 +20,8 @@ jobs:
       - name: workflow exports match src/
         run: |
           npm run build
-          git diff --exit-code workflow.json error-workflow.json
+          git diff --exit-code -- "*.json"
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
