@@ -90,6 +90,9 @@ const mockCredentials = (base) => ({
   openAiApi: { apiKey: 'test-key', url: `${base}/api.openai.com/v1` },
   hubspotAppToken: { appToken: 'test-token' },
 });
+// Mock credentials without a URL. Only HTTP Request nodes (whose URL is rewritten) may use them;
+// a native node with one of these would call the real API, so it is recorded instead.
+const HTTP_ONLY = new Set(['httpHeaderAuth', 'hubspotAppToken']);
 
 const docker = async (args, { input } = {}) => {
   const env = ['-e', 'N8N_DIAGNOSTICS_ENABLED=false', '-e', 'N8N_RUNNERS_ENABLED=true'];
@@ -237,7 +240,7 @@ function prepare(wf, testCase, ids, base, credentialData) {
       return { ...n, parameters: { ...n.parameters, workflowId: { __rl: true, mode: 'id', value: id } } };
     }
     const creds = Object.keys(n.credentials ?? {});
-    if (creds.length && creds.every((t) => t in credentialData))
+    if (creds.length && creds.every((t) => t in credentialData && !HTTP_ONLY.has(t)))
       return { ...n, credentials: Object.fromEntries(creds.map((t) => [t, ids.credential(t)])) };
     if ((!creds.length && !RECORDED.has(n.type)) || RUNS_AS_IS.has(n.type)) return n;
     // One Set node that evaluates all of the node's expressions with their real types.
