@@ -157,7 +157,7 @@ test('parse: a reply that followed injected instructions is clamped', () => {
   assert.equal(out.needs_reply, false);
   assert.equal(out.draft_reply, '');
   assert.equal(out.needs_review, true);
-  assert.match(out.error, /draft_reply contains a link or account number/);
+  assert.match(out.error, /draft_reply contains a link or IBAN/);
 });
 
 test('parse: links in drafts are dropped', () => {
@@ -166,6 +166,46 @@ test('parse: links in drafts are dropped', () => {
   const [out] = parse([reply]);
   assert.equal(out.draft_reply, '');
   assert.equal(out.needs_review, true);
+});
+
+test('parse: IBANs are caught in any case and with any separator', () => {
+  for (const iban of [
+    'de89 3704 0044 0532 0130 00',
+    'DE89-3704-0044-0532-0130-00',
+    'DE89370400440532013000',
+    'gb82.west.1234.5698.7654.32',
+  ]) {
+    const draft = `Please pay to ${iban}, thanks.`;
+    const [out] = parse([
+      JSON.stringify({ category: 'billing', priority: 'normal', summary: 'x', needs_reply: true, draft_reply: draft }),
+    ]);
+    assert.equal(out.draft_reply, '', iban);
+    assert.equal(out.needs_review, true, iban);
+  }
+});
+
+test('parse: links without https are caught too', () => {
+  for (const link of ['ftp://evil.example', 'evil.example/pay', 'WWW.evil.example']) {
+    const [out] = parse([
+      JSON.stringify({
+        category: 'support',
+        priority: 'normal',
+        summary: 'x',
+        needs_reply: true,
+        draft_reply: `Go to ${link} now.`,
+      }),
+    ]);
+    assert.equal(out.draft_reply, '', link);
+  }
+});
+
+test('parse: ordinary drafts are not mistaken for links or IBANs', () => {
+  const draft = 'Hi Anna, de12 thanks for your order 4711 from 03.10.2026, e.g. the blue one. It ships on Monday.';
+  const [out] = parse([
+    JSON.stringify({ category: 'sales', priority: 'normal', summary: 'x', needs_reply: true, draft_reply: draft }),
+  ]);
+  assert.equal(out.draft_reply, draft);
+  assert.equal(out.needs_review, false);
 });
 
 test('parse: spam is always low priority and never gets a draft', () => {

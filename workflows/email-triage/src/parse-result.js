@@ -8,9 +8,29 @@ const CATEGORIES = ['support', 'sales', 'billing', 'partnership', 'job', 'newsle
 const PRIORITIES = ['high', 'normal', 'low'];
 const NO_REPLY = ['newsletter', 'spam'];
 const MAX_DRAFT_CHARS = 2000;
-// The model has no account numbers or links of its own, so if one shows up in a draft it was
+// The model has no links or bank details of its own, so if one shows up in a draft it was
 // copied from the email or made up. Either way the draft is dropped and a human takes a look.
-const SUSPICIOUS_DRAFT = [/https?:\/\/|www\./i, /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}/];
+// Links: any scheme (https://, ftp://), www., or a domain followed by a path (evil.example/pay).
+const LINK = /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\//i;
+// IBAN-shaped: country code, check digits, 11 to 30 more characters, in any case and with
+// spaces, dashes or dots between them. Real IBANs are mostly digits with at most four letters
+// in a row (bank codes like WEST), which keeps ordinary sentences from matching.
+const IBAN_CANDIDATE = /\b[a-z]{2}\d{2}(?:[ .-]?[a-z0-9]){11,30}/gi;
+
+/** @param {string} candidate */
+function looksLikeIban(candidate) {
+  // The match can run into the next word ("... 00 Best regards"), so trailing letters are cut.
+  const bban = candidate
+    .replace(/[ .-]/g, '')
+    .slice(4)
+    .replace(/[a-z]+$/i, '');
+  return bban.length >= 11 && !/[a-z]{5}/i.test(bban) && (bban.match(/\d/g) ?? []).length >= 8;
+}
+
+/** @param {string} text */
+function isSuspiciousDraft(text) {
+  return LINK.test(text) || [...text.matchAll(IBAN_CANDIDATE)].some((m) => looksLikeIban(m[0]));
+}
 
 /**
  * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
@@ -64,8 +84,8 @@ function triage(res) {
   const category = CATEGORIES.includes(raw.category) ? raw.category : 'other';
 
   let needsReply = raw.needs_reply === true && !NO_REPLY.includes(category);
-  if (needsReply && SUSPICIOUS_DRAFT.some((re) => re.test(String(raw.draft_reply ?? '')))) {
-    problems.push('draft_reply contains a link or account number');
+  if (needsReply && isSuspiciousDraft(String(raw.draft_reply ?? ''))) {
+    problems.push('draft_reply contains a link or IBAN');
     needsReply = false;
   }
 
