@@ -1,0 +1,85 @@
+{
+  "type": "object",
+  "properties": {
+    "document_type": { "type": "string", "enum": ["invoice", "credit_note", "receipt", "not_invoice"] },
+    "supplier_name": { "type": "string" },
+    "supplier_vat_id": { "type": "string" },
+    "invoice_number": { "type": "string" },
+    "invoice_date": { "type": "string" },
+    "due_date": { "type": "string" },
+    "payment_terms_days": { "type": "string" },
+    "currency": { "type": "string" },
+    "number_format": { "type": "string", "enum": ["1.234,56", "1,234.56"] },
+    "net_amount": { "type": "string" },
+    "vat_amount": { "type": "string" },
+    "gross_amount": { "type": "string" },
+    "vat_lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rate": { "type": "string" },
+          "net": { "type": "string" },
+          "vat": { "type": "string" }
+        },
+        "required": ["rate", "net", "vat"],
+        "additionalProperties": false
+      }
+    },
+    "iban": { "type": "string" },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string" },
+          "quantity": { "type": "string" },
+          "unit_price": { "type": "string" },
+          "amount": { "type": "string" }
+        },
+        "required": ["description", "quantity", "unit_price", "amount"],
+        "additionalProperties": false
+      }
+    },
+    "uncertain_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "document_type",
+          "supplier_name",
+          "supplier_vat_id",
+          "invoice_number",
+          "invoice_date",
+          "due_date",
+          "currency",
+          "net_amount",
+          "vat_amount",
+          "gross_amount",
+          "vat_lines",
+          "iban",
+          "line_items"
+        ]
+      }
+    }
+  },
+  "required": [
+    "document_type",
+    "supplier_name",
+    "supplier_vat_id",
+    "invoice_number",
+    "invoice_date",
+    "due_date",
+    "payment_terms_days",
+    "currency",
+    "number_format",
+    "net_amount",
+    "vat_amount",
+    "gross_amount",
+    "vat_lines",
+    "iban",
+    "line_items",
+    "uncertain_fields"
+  ],
+  "additionalProperties": false
+}
