@@ -8,19 +8,30 @@ everything to Google Sheets. Nothing is sent automatically; replies wait as draf
 
 ![The workflow in the n8n editor](docs/workflow.png)
 
-## What happens to each email
+## How it works
 
-1. **Gmail Trigger** picks up unread emails in the inbox (checks every minute).
-2. **Prepare email** extracts sender, subject and plain text (HTML is stripped, very long emails are cut to 6,000 characters).
-3. **Ask Claude** sends it to the Anthropic API with a strict prompt ([`src/prompt.md`](src/prompt.md)) and gets back JSON:
-   category, priority, a one-sentence summary, whether it needs a reply, and a draft reply in the sender's language.
-4. **Parse AI result** validates that JSON. Anything malformed, or an API error, becomes category `other`
-   with `needs_review = true`, so **no email is ever silently dropped**.
-5. Then, in parallel:
-   - **Add Gmail label** files it under Support, Sales, Billing, Partnership, Job, Newsletter, Spam or Review.
-   - **Alert on Slack** posts high-priority emails (broken service, money at risk, legal or security issues, deadlines within 48 hours).
-   - **Create reply draft** puts a suggested answer into the Gmail thread as a draft. The prompt forbids inventing prices, facts or promises.
-   - **Log to Google Sheets** keeps one row per email for reporting and spot checks.
+```mermaid
+flowchart LR
+    T[Gmail Trigger] --> S[Settings] --> P[Prepare email] --> A[Ask Claude] --> R[Parse AI result]
+    R --> L[Add Gmail label]
+    R --> H{High priority?} -- yes --> SL[Alert on Slack]
+    R --> N{Needs reply?} -- yes --> D[Create reply draft]
+    R --> G[Log to Google Sheets]
+```
+
+1. Gmail Trigger picks up unread emails in the inbox (checks every minute).
+2. Prepare email extracts sender, subject and plain text (HTML is stripped, the body is cut to 6,000
+   characters) and skips mail that already has one of the triage labels.
+3. Ask Claude sends it to the Anthropic API with the prompt in [`src/prompt.md`](src/prompt.md) and gets
+   back JSON: category, priority, a one-sentence summary, whether it needs a reply, and a draft reply in
+   the sender's language.
+4. Parse AI result validates that JSON. Anything malformed, a refusal, or an API error becomes category
+   `other` with `needs_review = true`, so no email is silently dropped.
+5. Then the email is labelled (Support, Sales, Billing, Partnership, Job, Newsletter, Spam or Review),
+   high-priority mail is posted to Slack, a draft is added to the Gmail thread if a reply is needed, and
+   one row is appended to the log sheet.
+
+A second, small workflow (`error-workflow.json`) posts to Slack when a run fails outright.
 
 ## Setup (about 15 minutes)
 
@@ -29,44 +40,98 @@ everything to Google Sheets. Nothing is sent automatically; replies wait as draf
    - Gmail OAuth2 (Gmail Trigger, Add Gmail label, Create reply draft)
    - Header Auth for Anthropic: name `x-api-key`, value your API key (Ask Claude)
    - Slack and Google Sheets OAuth2 (optional; delete those nodes if you do not need them)
-3. Open the **Settings** node and fill in:
-   - `labels`: the Gmail label IDs for each category (create the labels in Gmail first; the IDs appear in the
-     label dropdown of any Gmail node)
-   - `slackChannel` and `sheetId` (the sheet needs a tab named `Log` with the header row `processedAt, from, subject, category, priority, summary, needs_reply, needs_review, error`)
-   - `model` if you want a different Claude model
+3. Fill in the Settings node (see [Configuration](#configuration)). Create the Gmail labels first; their
+   IDs appear in the label dropdown of any Gmail node.
 4. Import `error-workflow.json` as well, select the Slack credential and channel in it, and pick it under
-   **Workflow settings → Error workflow** of the triage workflow. It posts the failed node, the error and a
-   link to the execution if the workflow stops (a Gmail, Slack or Sheets call failing, for example).
-   n8n assigns workflow IDs on import, so this link cannot be shipped in the export.
+   **Workflow settings → Error workflow** of the triage workflow. n8n assigns workflow IDs on import, so
+   this link cannot be shipped in the export.
 5. Run it once with **Execute workflow**, check the result, then activate it.
 
-To use OpenAI or another provider instead, change the URL, header and request shape in **Ask Claude** and
-**Prepare email**; the rest of the workflow stays the same.
+To use OpenAI or another provider instead, change the URL, header and request shape in Ask Claude and
+Prepare email; the rest of the workflow stays the same.
 
-## Tests
+## Configuration
 
-The Code node logic and the prompt live in `src/` as normal files. `npm run build` writes them into
-`workflow.json` and `error-workflow.json`, and the tests run the same code outside n8n with mocked inputs:
+Settings node:
+
+| Key | Default | Notes |
+|---|---|---|
+| `model` | `claude-haiku-5-5` | The request turns thinking off, which Haiku 5.5 accepts. For Opus 5.5 or Sonnet 5.5, remove `thinking` in `src/prepare-email.js` and raise `max_tokens`. |
+| `labels` | placeholders | Gmail label ID per category; `other` is the review label. |
+| `slackChannel` | `#inbox-alerts` | Channel for high-priority mail. |
+| `sheetId` | placeholder | Needs a tab `Log` with the header row `processedAt, from, subject, category, priority, summary, needs_reply, needs_review, error`. |
+| `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so tests and eval use the same text. |
+
+Set in the code (`src/`, `scripts/build-workflow.mjs`): body limit 6,000 characters, sender and subject
+300, `max_tokens` 700, drafts capped at 2,000 characters, Claude calls batched 5 per second with a 60 s
+timeout and up to 4 tries, polling every minute.
+
+## Design decisions
+
+- Drafts, not sent replies. A wrong category costs a click; a wrong answer to a customer costs more.
+  The draft is only created when the reply passed validation.
+- Emails are untrusted input. The email goes to Claude inside `<email>` tags with any such tags removed
+  from its text, and the prompt says instructions in it are not to be followed. The parser does not rely
+  on that: it only accepts known categories and priorities, forces spam to low priority, never drafts for
+  spam or newsletters, and drops any draft that contains a URL or IBAN, since the model has neither unless
+  the email put it there. Sender, subject and summary are escaped in Slack (no `<!channel>` pings) and
+  written to Sheets as plain values (no formulas).
+- Failures are visible. A failed Claude call becomes a Review item with the API error in the log. Any
+  other failure (expired token, wrong label ID) stops the run and the error workflow reports it.
+
+## Running in production
+
+- Cost: input per email is at most about 8,200 characters (1,500 prompt, 600 sender and subject, 6,000
+  body) and output at most 700 tokens. Even at a pessimistic 2 characters per token that is under 4,200
+  input tokens, so at Haiku 5.5 list prices ($0.10 / $0.50 per million tokens, October 2026) one email
+  costs at most about $0.0008. Most emails are far shorter.
+- Rate limits: Claude calls go out in batches of 5 per second. A large backlog on first activation is
+  not a problem because the trigger only fetches mail received after activation.
+- Data: execution logs contain the email text. Set `EXECUTIONS_DATA_SAVE_ON_SUCCESS=none` or prune with
+  `EXECUTIONS_DATA_PRUNE=true` and `EXECUTIONS_DATA_MAX_AGE`. Email content is sent to Anthropic, so the
+  customer's data processing agreement needs to cover it.
+- Credentials: n8n stores them encrypted with `N8N_ENCRYPTION_KEY`; keep that key outside the instance
+  backup. The exports here contain no credential IDs (a test checks this).
+- Scale: one poll per minute with a handful of emails runs fine in n8n's default mode. Queue mode
+  (`EXECUTIONS_MODE=queue` with Redis and workers) is only worth it if the instance runs much else.
+
+## Limits
+
+- Retries: n8n retries a node that continues on error only when the first item of a batch failed, and
+  then repeats the whole batch with a fixed 5 s wait. Emails that still fail go to Review rather than
+  being retried later.
+- If a run stops after Ask Claude (for example a Gmail call fails), the trigger has already moved past
+  those emails. The error workflow reports it; the emails have to be labelled by hand or re-run.
+- Attachments are ignored and only the first 6,000 characters of the body are read.
+- Prompt injection is mitigated, not ruled out: an email can still nudge category or priority. What it
+  cannot do is get a link or account number into a draft, or reach Slack or Sheets unescaped.
+
+## Development
 
 ```bash
-npm test
+npm ci
+npm test            # builds both workflow files, then runs the tests
+npm run lint        # ESLint + Prettier
+npm run typecheck   # tsc on the Code node sources (// @ts-check + JSDoc)
 ```
 
-They cover email parsing (plain text, HTML, truncation), the request sent to Claude, validation of the AI
-reply (wrapped JSON, unknown categories, API errors), and checks on `workflow.json` itself: every node
-reachable, every category has a label, the export in sync with `src/`, and no credentials included.
+The Code node logic and the prompt live in `src/` as normal files. `npm run build` writes them into
+`workflow.json` and `error-workflow.json`; never edit those by hand. The tests run the Code node sources
+outside n8n with mocked `$input` and `$()`, and check the exports: every node reachable, every category
+has a label, exports in sync with `src/`, no credentials included, retry and escaping settings in place.
+CI runs lint, type check and tests on Node 20 and 22 and fails if a rebuilt export differs from the
+committed one.
 
-`npm run lint` runs ESLint and Prettier, `npm run typecheck` checks the Code node sources with
-TypeScript (`// @ts-check` and JSDoc, no build step). CI runs all three on Node 20 and 22 and fails if
-`workflow.json` was edited by hand or not rebuilt after a change in `src/`.
-
-The workflow was also imported into n8n 1.123 and run end to end with mocked Gmail and Claude steps.
+An earlier version of the workflow was imported into n8n 1.123 and run end to end with mocked Gmail
+and Claude steps. The node settings added since (retries, timeout, cell format, error workflow) were
+checked against the n8n 1.12x node sources.
 
 ### Measuring the prompt
 
-[`eval/emails.json`](eval/emails.json) holds labelled example emails in English and German.
-`ANTHROPIC_API_KEY=... npm run eval` sends them through the real prompt and prints category and
-priority accuracy, so prompt changes can be compared before going live.
+[`eval/emails.json`](eval/emails.json) holds 28 labelled emails in English and German, including
+prompt-injection attempts and a few that are easy to get wrong. `ANTHROPIC_API_KEY=... npm run eval`
+sends them through the real prompt and parser and prints category and priority accuracy, so prompt
+changes can be compared before going live.
 
 ## Files
 
@@ -78,8 +143,9 @@ priority accuracy, so prompt changes can be compared before going live.
 | `src/prepare-email.js` | Code node: normalise email, build API request |
 | `src/parse-result.js` | Code node: validate the AI reply |
 | `src/format-error-alert.js` | Code node of the error workflow: build the Slack message |
-| `scripts/build-workflow.mjs` | builds `workflow.json` from `src/` |
-| `test/` | unit tests for the Code nodes and structural checks of the workflow |
+| `src/n8n-globals.d.ts` | types for `$input` and `$()`, used by the type check only |
+| `scripts/build-workflow.mjs` | builds both workflow files from `src/` |
+| `test/` | unit tests for the Code nodes and structural checks of the workflows |
 | `eval/` | labelled emails and an accuracy script |
 
 ## License
