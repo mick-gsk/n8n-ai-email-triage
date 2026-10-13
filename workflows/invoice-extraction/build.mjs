@@ -18,13 +18,36 @@ const settings = {
   processedLabelId: 'Label_INVOICE_DONE',
   reviewLabelId: 'Label_INVOICE_REVIEW',
   sheetId: 'YOUR_GOOGLE_SHEET_ID',
+  driveFolderId: 'YOUR_DRIVE_FOLDER_ID',
   slackChannel: '#bookkeeping',
 };
 
 const gmail = credential('gmailOAuth2', 'Gmail account');
 const sheets = credential('googleSheetsOAuth2Api', 'Google Sheets account');
+const drive = credential('googleDriveOAuth2Api', 'Google Drive account');
 const fromSettings = (key) => `={{ $('Settings').first().json.${key} }}`;
 
+const invoiceColumns = [
+  'processed_at',
+  'document_type',
+  'supplier_name',
+  'supplier_vat_id',
+  'invoice_number',
+  'invoice_date',
+  'due_date',
+  'currency',
+  'net_amount',
+  'vat_amount',
+  'gross_amount',
+  'vat_rates',
+  'iban',
+  'line_items',
+  'file_name',
+  'file_link',
+  'email_from',
+  'email_subject',
+  'message_id',
+];
 const reviewColumns = [
   'processed_at',
   'status',
@@ -183,6 +206,74 @@ const nodes = [
     parameters: condition('valid', '={{ $json.status }}', { type: 'string', operation: 'equals' }, 'ok'),
   }),
 
+  node('Find month folders', 'n8n-nodes-base.googleDrive', 3, [2640, 100], {
+    parameters: {
+      resource: 'fileFolder',
+      operation: 'search',
+      searchMethod: 'query',
+      queryString: '',
+      returnAll: true,
+      filter: {
+        folderId: { __rl: true, mode: 'id', value: fromSettings('driveFolderId') },
+        whatToSearch: 'folders',
+      },
+      options: {},
+    },
+    credentials: drive,
+    executeOnce: true,
+    alwaysOutputData: true,
+  }),
+
+  node('Plan folders', 'n8n-nodes-base.code', 2, [2860, 100], {
+    parameters: { jsCode: read('src/plan-folders.js') },
+  }),
+
+  node('Folder missing?', 'n8n-nodes-base.if', 2.3, [3080, 100], {
+    parameters: condition('missing', '={{ $json.folder_id }}', {
+      type: 'string',
+      operation: 'empty',
+      singleValue: true,
+    }),
+  }),
+
+  node('Create month folder', 'n8n-nodes-base.googleDrive', 3, [3300, 0], {
+    parameters: {
+      resource: 'folder',
+      operation: 'create',
+      name: '={{ $json.month }}',
+      driveId: { __rl: true, mode: 'list', value: 'My Drive' },
+      folderId: { __rl: true, mode: 'id', value: fromSettings('driveFolderId') },
+      options: {},
+    },
+    credentials: drive,
+  }),
+
+  node('Merge folders', 'n8n-nodes-base.merge', 3.2, [3520, 100], { parameters: {} }),
+
+  node('Attach folder', 'n8n-nodes-base.code', 2, [3740, 100], {
+    parameters: { jsCode: read('src/attach-folder.js') },
+  }),
+
+  node('Upload to Drive', 'n8n-nodes-base.googleDrive', 3, [3960, 100], {
+    parameters: {
+      resource: 'file',
+      operation: 'upload',
+      inputDataFieldName: 'file',
+      name: '={{ $json.drive_file_name }}',
+      driveId: { __rl: true, mode: 'list', value: 'My Drive' },
+      folderId: { __rl: true, mode: 'id', value: '={{ $json.folder_id }}' },
+      options: {},
+    },
+    credentials: drive,
+  }),
+
+  node('Prepare rows', 'n8n-nodes-base.code', 2, [4180, 100], {
+    parameters: { jsCode: read('src/prepare-rows.js') },
+  }),
+
+  appendRows('Append to Invoices', [4400, 100], 'Invoices', invoiceColumns),
+  addLabel('Label as processed', [4620, 100], 'processedLabelId'),
+
   node('Post to Slack', 'n8n-nodes-base.slack', 2.4, [2640, 460], {
     parameters: {
       resource: 'message',
@@ -217,7 +308,21 @@ const connections = {
   'Collect results': link('Read existing invoices'),
   'Read existing invoices': link('Check duplicates'),
   'Check duplicates': link('Valid?'),
-  'Valid?': link(null, ['Post to Slack', 'Append to Review', 'Label for review']),
+  'Valid?': link('Find month folders', ['Post to Slack', 'Append to Review', 'Label for review']),
+  'Find month folders': link('Plan folders'),
+  'Plan folders': link('Folder missing?'),
+  'Folder missing?': {
+    main: [
+      [{ node: 'Create month folder', type: 'main', index: 0 }],
+      [{ node: 'Merge folders', type: 'main', index: 1 }],
+    ],
+  },
+  'Create month folder': link('Merge folders'),
+  'Merge folders': link('Attach folder'),
+  'Attach folder': link('Upload to Drive'),
+  'Upload to Drive': link('Prepare rows'),
+  'Prepare rows': link('Append to Invoices'),
+  'Append to Invoices': link('Label as processed'),
 };
 
 writeWorkflow(
