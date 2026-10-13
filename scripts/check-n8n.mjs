@@ -12,8 +12,12 @@
 //       - nodes that need any other account (Gmail, Slack, Sheets, ...) become Set nodes that
 //         evaluate the node's expressions and pass them on under `sent`, so a case can check
 //         what would have been sent;
-//       - nodes listed in a case's `stubs` return fixed items instead.
+//       - nodes listed in a case's `stubs` return fixed items instead (an item's `$binary` becomes
+//         its binary data, for nodes that download files).
 //     Everything else (Code, If, Switch, Merge, AI agents, ...) runs as exported.
+//     A cases file can also export `services`: containers (a database, say) that are started
+//     before its cases and removed after them. Their credentials point at the real service, so
+//     nodes using them run unchanged, and data carries over from one case to the next.
 //
 //   npm run check:n8n                     all workflows
 //   npm run check:n8n -- email-triage     one workflow
@@ -42,6 +46,9 @@ const run = promisify(execFile);
 const image = process.env.N8N_IMAGE ?? 'docker.n8n.io/n8nio/n8n:latest';
 const only = process.argv.slice(2);
 const volume = `n8n-check-${process.pid}`;
+// n8n and the service containers share this network and reach each other by service name.
+const network = volume;
+const runningServices = new Set();
 const work = mkdtempSync(join(tmpdir(), 'n8n-check-'));
 // The container runs as user node and writes the node catalog here.
 chmodSync(work, 0o777);
@@ -91,6 +98,8 @@ const docker = async (args, { input } = {}) => {
       'host.docker.internal:host-gateway',
       '-v',
       `${volume}:/home/node/.n8n`,
+      '--network',
+      network,
       '-v',
       `${work}:/check`,
       ...env,
@@ -192,9 +201,10 @@ function unflatten(flat) {
   return out;
 }
 
-const codeReturning = (items) => `return ${JSON.stringify(items.map((json) => ({ json })))};`;
+const codeReturning = (items) =>
+  `return ${JSON.stringify(items.map(({ $binary, ...json }) => ($binary ? { json, binary: $binary } : { json })))};`;
 
-function prepare(wf, testCase, ids, base) {
+function prepare(wf, testCase, ids, base, credentialData) {
   const copy = structuredClone(wf);
   const stubs = testCase.stubs ?? {};
   const triggers = copy.nodes.filter(isTrigger);
@@ -223,7 +233,7 @@ function prepare(wf, testCase, ids, base) {
       return { ...n, parameters: { ...n.parameters, workflowId: { __rl: true, mode: 'id', value: id } } };
     }
     const creds = Object.keys(n.credentials ?? {});
-    if (creds.length && creds.every((t) => t in mockCredentials(base)))
+    if (creds.length && creds.every((t) => t in credentialData))
       return { ...n, credentials: Object.fromEntries(creds.map((t) => [t, ids.credential(t)])) };
     if (!creds.length || RUNS_AS_IS.has(n.type)) return n;
     // One Set node that evaluates all of the node's expressions with their real types.
@@ -304,16 +314,67 @@ function parseRun(stdout) {
   };
 }
 
+// Runs a command in a service container, with optional stdin; resolves to its stdout.
+function dockerExec(container, cmd, input) {
+  const p = run('docker', ['exec', '-i', container, ...cmd]);
+  p.child.stdin.end(input ?? '');
+  return p.then(({ stdout }) => stdout);
+}
+
+// services: { name: { image, env, port, ready: cmd, setup: [{ cmd, input }], credentials({ host, port }) } }
+// Resolves to the credential data for those services and an exec(cmd, input) per service.
+async function startServices(services) {
+  const exec = {};
+  for (const [name, def] of Object.entries(services)) {
+    const container = `${volume}-${name}`;
+    const env = Object.entries(def.env ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    runningServices.add(container);
+    await run('docker', [
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      container,
+      '--network',
+      network,
+      '--network-alias',
+      name,
+      ...env,
+      def.image,
+    ]);
+    exec[name] = (cmd, input) => dockerExec(container, cmd, input);
+    for (let tries = 0; ; tries++) {
+      try {
+        await exec[name](def.ready);
+        break;
+      } catch (e) {
+        if (tries >= 90) throw new Error(`service ${name} did not become ready\n${e.stderr ?? e}`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+    for (const step of def.setup ?? []) await exec[name](step.cmd, step.input);
+  }
+  const credentials = Object.entries(services).map(([name, def]) => def.credentials({ host: name, port: def.port }));
+  return { exec, credentials: Object.assign({}, ...credentials) };
+}
+
+async function stopServices() {
+  for (const container of runningServices) await run('docker', ['rm', '-f', container]).catch(() => {});
+  runningServices.clear();
+}
+
 async function runCases(dirs) {
   let count = 0;
   for (const dir of dirs) {
     const casesFile = join(dir, 'test', 'n8n.cases.mjs');
     if (!existsSync(casesFile)) continue;
-    const { cases } = await import(pathToFileURL(casesFile).href);
+    const { cases, services = {} } = await import(pathToFileURL(casesFile).href);
+    const svc = await startServices(services);
     for (const testCase of cases) {
       const requests = [];
       const server = await startMock(testCase.http ?? {}, requests);
       const base = `http://host.docker.internal:${server.address().port}`;
+      const credentialData = { ...mockCredentials(base), ...svc.credentials };
       const caseDir = join(work, `case-${count}`);
       mkdirSync(caseDir);
       const credentials = [];
@@ -327,20 +388,20 @@ async function runCases(dirs) {
               id,
               name: `${type} (check)`,
               type,
-              data: mockCredentials(base)[type] ?? { accessToken: 'test-token', apiKey: 'test-key' },
+              data: credentialData[type] ?? { accessToken: 'test-token', apiKey: 'test-key' },
             });
           return { id, name: `${type} (check)` };
         },
         subworkflow(file) {
           const id = `${prefix}sub${String(workflows.length).padStart(9, '0')}`;
           const sub = JSON.parse(readFileSync(join(dir, file), 'utf8'));
-          workflows.push({ ...prepare(sub, {}, ids, base), id });
+          workflows.push({ ...prepare(sub, {}, ids, base, credentialData), id });
           return id;
         },
       };
       const wf = JSON.parse(readFileSync(join(dir, testCase.workflow ?? 'workflow.json'), 'utf8'));
       const mainId = `${prefix}main00000000`;
-      workflows.unshift({ ...prepare(wf, testCase, ids, base), id: mainId });
+      workflows.unshift({ ...prepare(wf, testCase, ids, base, credentialData), id: mainId });
       mkdirSync(join(caseDir, 'workflows'));
       workflows.forEach((w, j) => writeFileSync(join(caseDir, 'workflows', `${j}.json`), JSON.stringify(w)));
       const rel = `/check/case-${count}`;
@@ -363,11 +424,13 @@ async function runCases(dirs) {
       server.close();
       const result = parseRun(stdout);
       result.requests = requests;
+      result.services = svc.exec;
       if (!testCase.expectFailure) assert.equal(result.status, 'success', `${label}: ${JSON.stringify(result.error)}`);
       await testCase.check(result, assert);
       console.log(`run: ${label}`);
       count++;
     }
+    await stopServices();
   }
   console.log(`runs: ${count} cases passed`);
 }
@@ -379,12 +442,15 @@ try {
       .filter((f) => f.endsWith('.json'))
       .map((f) => join(d, f)),
   );
+  await run('docker', ['network', 'create', network]);
   const { stdout } = await docker(['--version']);
   console.log(`n8n ${stdout.trim().split('\n').pop()} (${image})`);
   await checkNodeTypes(files);
   await checkImport(files);
   await runCases(dirs);
 } finally {
+  await stopServices();
   await run('docker', ['volume', 'rm', '-f', volume]).catch(() => {});
+  await run('docker', ['network', 'rm', network]).catch(() => {});
   rmSync(work, { recursive: true, force: true });
 }
