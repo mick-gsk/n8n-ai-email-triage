@@ -23,25 +23,56 @@ test('exports are in sync with src/ (run npm run build)', () => {
   assert.equal(chat.byName['Support agent'].parameters.options.systemMessage, src('system-prompt.md').trim());
 });
 
+const targets = ({ wf }, name) => wf.connections[name].main.map((branch) => branch.map((c) => c.node));
+
 test('every chunk is stored with file id, file name and source URL', () => {
   const loader = ingest.byName['Document loader'];
-  const names = loader.parameters.options.metadata.metadataValues.map((m) => m.name);
-  for (const key of ['file_id', 'file_name', 'source_url', 'ingest_run']) assert.ok(names.includes(key), key);
+  const values = loader.parameters.options.metadata.metadataValues;
+  for (const key of ['file_id', 'file_name', 'source_url', 'ingest_run'])
+    assert.ok(
+      values.some((m) => m.name === key),
+      key,
+    );
+  // A sub-node resolves expressions against the first item, so the metadata must come from the
+  // one file the loop is processing.
+  for (const m of values.filter((m) => m.name !== 'ingest_run'))
+    assert.equal(m.value, `={{ $('Loop over files').item.json.${m.name} }}`, m.name);
   assert.deepEqual(linked(ingest, 'Document loader', 'ai_document'), ['Store chunks']);
   assert.deepEqual(linked(ingest, 'Text splitter', 'ai_textSplitter'), ['Document loader']);
 });
 
+test('files are stored one at a time: download, then a loop of store and clean up per file', () => {
+  assert.deepEqual(targets(ingest, 'Select files'), [['Download file']]);
+  assert.deepEqual(targets(ingest, 'Download file'), [['Loop over files']]);
+  const loop = ingest.byName['Loop over files'];
+  assert.equal(loop.type, 'n8n-nodes-base.splitInBatches');
+  assert.equal(loop.parameters.batchSize, 1);
+  assert.deepEqual(targets(ingest, 'Loop over files'), [[], ['Store chunks']], 'done ends the run, loop stores');
+  assert.deepEqual(targets(ingest, 'Store chunks'), [['Remove old chunks']]);
+  assert.deepEqual(targets(ingest, 'Remove old chunks'), [['Loop over files']]);
+});
+
 test('re-ingesting a file removes its older chunks, after the new ones are stored', () => {
-  assert.deepEqual(ingest.wf.connections['Store chunks'].main, [
-    [{ node: 'Remove old chunks', type: 'main', index: 0 }],
-  ]);
   const remove = ingest.byName['Remove old chunks'];
   assert.match(remove.parameters.query, /DELETE FROM support_chunks/);
-  assert.match(remove.parameters.query, /metadata ->> 'file_id' IN/);
-  assert.match(remove.parameters.query, /metadata ->> 'ingest_run' IS DISTINCT FROM \$2/);
-  assert.match(remove.parameters.options.queryReplacement, /\$execution\.id/);
+  assert.match(remove.parameters.query, /WHERE metadata ->> 'file_id' = \$1/);
+  // Concurrent runs of the same file: only the newest run's chunks are kept, by every cleanup.
+  assert.match(remove.parameters.query, /GREATEST\(\$2::bigint, max\(run\)\)/);
+  assert.equal(
+    remove.parameters.options.queryReplacement,
+    "={{ [ $('Loop over files').item.json.file_id, String($execution.id) ] }}",
+  );
   assert.equal(remove.executeOnce, true);
   assert.equal(ingest.byName['Store chunks'].alwaysOutputData, true, 'an emptied file must still lose its old chunks');
+});
+
+test('the full sync lists sizes and forgets every chunk when the folder is empty', () => {
+  const list = ingest.byName['List folder'];
+  assert.deepEqual(list.parameters.options.fields, ['*'], 'Select files needs size, which is not in the field list');
+  assert.equal(list.alwaysOutputData, true);
+  const forget = ingest.byName['Forget removed files'];
+  assert.match(forget.parameters.options.queryReplacement, /\.filter\(Boolean\)/, 'the empty item adds no id');
+  assert.equal(forget.executeOnce, true);
 });
 
 test('ingest and chat use the same table and embedding model, and the table matches setup.sql', () => {

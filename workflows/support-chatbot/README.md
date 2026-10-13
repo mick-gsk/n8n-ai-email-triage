@@ -18,18 +18,22 @@ flowchart LR
     DT[Drive Trigger] --> SF[Select files]
     NS[Nightly sync / Sync now] --> LF[List folder] --> SF
     LF --> FR[Forget removed files]
-    SF --> DL[Download file] --> ST[Store chunks] --> RO[Remove old chunks]
+    SF --> DL[Download file] --> LP[Loop over files] --> ST[Store chunks] --> RO[Remove old chunks]
+    RO -- next file --> LP
 ```
 
 1. Drive Trigger checks the folder every 10 minutes for new or changed files. Nightly sync (3:00)
    and Sync now list the whole folder instead, for the first load and to catch deletions.
 2. Select files keeps Google Docs, PDF, Word (.docx), Markdown and plain text files up to 10 MB.
+   Drive reports no size for Google Docs, so they are not checked against the limit.
 3. Download file exports Google Docs as Markdown and downloads the others.
-4. Store chunks splits each file into chunks of about 1,000 characters (150 overlap), embeds them
-   with `text-embedding-3-small` and writes them to `support_chunks`, each with `file_id`,
-   `file_name`, `source_url` and the id of the run that stored it.
-5. Remove old chunks then deletes the chunks those files had from earlier runs. Forget removed
-   files (full sync only) deletes chunks of files that are no longer in the folder.
+4. Loop over files passes the files on one at a time. Store chunks splits the file into chunks of
+   about 1,000 characters (150 overlap), embeds them with `text-embedding-3-small` and writes them
+   to `support_chunks`, each with `file_id`, `file_name`, `source_url` and the id of the run that
+   stored it.
+5. Remove old chunks then deletes the chunks that file had from earlier runs, and the loop goes on
+   to the next file. Forget removed files (full sync only) deletes chunks of files that are no
+   longer in the folder; if the folder is empty, that is all chunks.
 
 ```mermaid
 flowchart LR
@@ -126,9 +130,15 @@ the same text.
   managed offers with pgvector have free or low-cost tiers. Deleting a file's chunks is a plain
   `DELETE`, which the n8n vector store nodes do not offer.
 - Replace, don't duplicate. Every chunk carries the id of the ingest run that stored it. After a
-  file's new chunks are stored, the older ones are deleted. A file is never without chunks while it
-  is being updated, and a run that fails halfway leaves the old chunks in place; the next run cleans
-  up.
+  file's new chunks are stored, the chunks of older runs are deleted. A file is never without chunks
+  while it is being updated, and a run that fails halfway leaves the old chunks in place; the next
+  run cleans up. If two runs store the same file at the same time (a Drive Trigger poll during the
+  nightly sync), each cleanup keeps the chunks of the run with the highest execution id, so one set
+  remains instead of none or both.
+- One file at a time. The document loader is a sub-node, and n8n documents that sub-node
+  expressions resolve against the first input item. With several files in one pass, chunks could
+  get the first file's metadata. The loop gives Store chunks and Remove old chunks one file per
+  pass, so the metadata and the cleanup refer to that file.
 - Sources are checked, not trusted. The model is told to cite file names, but Check answer only
   accepts names that appear in the search results of that turn, and builds the links from the stored
   metadata. An answer citing nothing that was retrieved, or containing a link, goes to the team.
@@ -178,10 +188,14 @@ the same text.
   conversation by session id in `support_chat_histories`.
 - Answers are only as good as the documents. Scanned PDFs without a text layer, images and
   spreadsheets are not read. Only files directly in the folder are read, not subfolders.
-- The nightly sync downloads and embeds every file again. For a folder with many large files,
-  run it weekly instead.
-- The rule for unsourced replies is a heuristic: a short wrong answer without digits ("Yes, we ship
-  to Canada") can still get through if the model ignores the prompt.
+- The nightly sync downloads and embeds every file again, and downloads all of them before the
+  loop starts, so they are held at once. For a folder with many large files, run it weekly
+  instead.
+- A sync that sees an empty folder deletes every chunk. A wrong folder ID in List folder also
+  looks like an empty folder to Drive; check the ID before running Sync now on a filled table.
+- The small-talk list for unsourced replies is short on purpose. A friendly reply that is not on it
+  ("Happy to help!") goes to the team; extend `SMALL_TALK` in `src/check-answer.js` if that
+  happens often.
 - The check for "asks for a person" is a word list in English and German; other phrasings are left
   to the agent, which hands off when it cannot answer.
 - The per-session rate limit can be bypassed with new session ids (see above).
