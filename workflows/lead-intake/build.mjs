@@ -50,7 +50,7 @@ const hubspotCredential = credential('hubspotAppToken', 'HubSpot private app tok
 // error workflow reports it, and the lead is in the execution data to re-run from.
 const hubspotRetry = { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 };
 
-const hubspotPost = (name, position, path, jsonBody) =>
+const hubspotPost = (name, position, path, jsonBody, retry = hubspotRetry) =>
   node(name, 'n8n-nodes-base.httpRequest', 4.5, position, {
     parameters: {
       method: 'POST',
@@ -62,7 +62,7 @@ const hubspotPost = (name, position, path, jsonBody) =>
       options: { timeout: 20000 },
     },
     credentials: hubspotCredential,
-    ...hubspotRetry,
+    ...retry,
   });
 
 const searchBody = `={{ JSON.stringify({
@@ -167,7 +167,9 @@ const nodes = [
     parameters: { jsCode: read('src/build-note.js') },
   }),
 
-  hubspotPost('Add note', [2860, 320], '/crm/v3/objects/notes', '={{ JSON.stringify($json.note) }}'),
+  // Creating a note is not idempotent: a retry after a lost response would add a second note, so
+  // this call is not retried. A failure stops the run like the other HubSpot calls.
+  hubspotPost('Add note', [2860, 320], '/crm/v3/objects/notes', '={{ JSON.stringify($json.note) }}', {}),
 
   node('Alert?', 'n8n-nodes-base.if', 2.2, [3080, 320], {
     parameters: ifCondition('alert', "={{ $('Build note').item.json.alert }}", '', {

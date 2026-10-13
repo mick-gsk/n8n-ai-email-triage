@@ -252,4 +252,22 @@ export const cases = [
       assert.equal(run.ran('Alert on Slack'), false);
     },
   },
+  {
+    name: 'a failed note is not retried and fails the run before the alert',
+    input: request(hotForm),
+    stubs: { Settings: [settings] },
+    expectFailure: true,
+    http: {
+      'POST api.hubapi.com/crm/v3/objects/contacts/search': () => noContact,
+      'POST api.anthropic.com/v1/messages': () => claudeSays(hot),
+      'POST api.hubapi.com/crm/v3/objects/contacts/batch/upsert': upserted('103', true),
+      'POST api.hubapi.com/crm/v3/objects/notes': () => ({ status: 502, body: { message: 'Bad Gateway' } }),
+    },
+    check(run, assert) {
+      assert.equal(run.status, 'error');
+      assert.equal(hubspot(run.requests, '/crm/v3/objects/notes').length, 1);
+      assert.equal(run.error.node?.name ?? run.error.node, 'Add note');
+      assert.equal(run.ran('Alert on Slack'), false);
+    },
+  },
 ];

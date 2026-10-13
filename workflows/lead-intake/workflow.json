@@ -369,10 +369,7 @@
           "id": "",
           "name": "HubSpot private app token"
         }
-      },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 3000
+      }
     },
     {
       "id": "alert-",

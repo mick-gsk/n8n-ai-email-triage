@@ -50,16 +50,19 @@ test('Ask Claude retries, times out and hands failures on instead of stopping', 
   assert.equal(ask.credentials.httpHeaderAuth.id, '');
 });
 
-test('HubSpot calls retry, time out, and stop the run when they still fail', () => {
+test('HubSpot calls time out and stop the run when they fail; only idempotent ones retry', () => {
   for (const name of ['Find contact', 'Upsert contact', 'Add note']) {
     const n = byName[name];
     assert.match(n.parameters.url, /^https:\/\/api\.hubapi\.com\/crm\/v3\/objects\//, name);
     assert.equal(n.parameters.nodeCredentialType, 'hubspotAppToken', name);
-    assert.equal(n.retryOnFail, true, name);
-    assert.ok(n.waitBetweenTries > 0 && n.waitBetweenTries <= 5000, name);
     assert.ok(n.parameters.options.timeout > 0, name);
     assert.equal(n.onError, undefined, `${name} must fail the run so the error workflow reports it`);
   }
+  for (const name of ['Find contact', 'Upsert contact']) {
+    assert.equal(byName[name].retryOnFail, true, name);
+    assert.ok(byName[name].waitBetweenTries > 0 && byName[name].waitBetweenTries <= 5000, name);
+  }
+  assert.ok(!byName['Add note'].retryOnFail, 'a retried create after a lost response adds a second note');
   assert.match(byName['Upsert contact'].parameters.url, /\/contacts\/batch\/upsert$/);
 });
 

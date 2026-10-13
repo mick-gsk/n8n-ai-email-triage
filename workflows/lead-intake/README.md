@@ -87,7 +87,8 @@ Settings node:
 | `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so the tests use the same text. |
 
 Set in the code (`src/`, `build.mjs`): message limit 5,000 characters, name and company 200, phone
-40, `max_tokens` 500, Claude timeout 60 s with up to 4 tries, HubSpot timeout 20 s with up to 3 tries.
+40, `max_tokens` 500, Claude timeout 60 s with up to 4 tries, HubSpot timeout 20 s with up to 3 tries
+(Add note: 1 try).
 
 ## Design decisions
 
@@ -111,7 +112,8 @@ Set in the code (`src/`, `build.mjs`): message limit 5,000 characters, name and 
   in the alert (no `<!channel>` pings or disguised links).
 - Failures are visible. A failed Claude call saves the lead for review and says so on Slack. HubSpot
   calls retry and then fail the run, so the error workflow reports it with a link to the execution,
-  which holds the submitted form. A batch response without a contact also fails the run in Build note
+  which holds the submitted form. Add note is the exception to retrying: creating a note is not
+  idempotent, and a retry after a lost response would add a second one. A batch response without a contact also fails the run in Build note
   instead of adding a note to nothing.
 
 ## Running in production
@@ -120,7 +122,7 @@ Set in the code (`src/`, `build.mjs`): message limit 5,000 characters, name and 
   and post it again. Repeating the upsert is safe; a full second run adds a second note.
 - Rate limits: HubSpot's search endpoint has a lower per-second limit than the other CRM endpoints.
   One search per form submission is far below it unless the form is flooded, and 429 answers are
-  retried.
+  retried (except for Add note, see Limits).
 - Abuse: n8n has no rate limit on webhooks. Requests without the secret stop at Validate lead, but if
   the secret is in a browser form, every submission that passes validation costs a Claude call. Put
   the webhook behind a reverse proxy with a rate limit in that case, or add a captcha to the form.
@@ -143,8 +145,9 @@ Set in the code (`src/`, `build.mjs`): message limit 5,000 characters, name and 
   execution list (Skip spam), not in HubSpot.
 - Prompt injection is mitigated, not ruled out: a form can still push its own score up. It cannot get
   unescaped text into HubSpot or Slack, change where data is written, or make up a budget.
-- The Slack alert waits for the note. If Add note fails after its retries, the run fails before the
-  alert and the error workflow reports it instead.
+- The Slack alert waits for the note. If Add note fails, the run fails before the alert and the error
+  workflow reports it instead. A rate-limited note is not retried either; use **Retry** on the
+  execution.
 
 ## Tests
 
@@ -155,10 +158,11 @@ retry and error settings on every HTTP node, spam never reaching HubSpot.
 
 `npm run check:n8n -- lead-intake` imports the workflow into n8n 2.43 (Docker) and runs the cases in
 [`test/n8n.cases.mjs`](test/n8n.cases.mjs): a hot lead from a new contact, an existing customer who is
-updated without losing their lifecycle stage, a filled honeypot, a wrong secret, the placeholder settings,
-an invalid form, spam, a failed Claude call, and HubSpot rejecting the contact. HubSpot and Claude are
-answered by a local mock with responses shaped like their API documentation; the workflow has not been
-run against a live HubSpot account from this repository.
+updated without losing their lifecycle stage, a filled honeypot, a wrong secret, the placeholder
+settings, an invalid form, spam, a failed Claude call, HubSpot rejecting the contact, and a failed
+note that is not retried. HubSpot and Claude are answered by a local mock with responses shaped like
+their API documentation; the workflow has not been run against a live HubSpot account from this
+repository.
 
 ## Files
 
