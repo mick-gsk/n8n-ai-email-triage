@@ -59,6 +59,14 @@ describe('Split attachments', () => {
   test('a PDF sent as application/octet-stream is recognised by its extension', () => {
     const [out] = split([message({ attachment_0: file('RE-1.PDF', 'application/octet-stream', 50_000) })]);
     assert.equal(out.json.media_type, 'application/pdf');
+    const [untyped] = split([message({ attachment_0: file('scan.jpg', '', 50_000) })]);
+    assert.equal(untyped.json.media_type, 'image/jpeg');
+  });
+
+  test('the extension does not override a specific type that is not supported', () => {
+    const [out] = split([message({ attachment_0: file('x.pdf', 'application/msword', 30_000) })]);
+    assert.equal(out.json.status, 'review');
+    assert.deepEqual(out.json.reasons, ['no PDF or image attachment (found: x.pdf)']);
   });
 
   test('an email without a usable file becomes a review item instead of disappearing', () => {
