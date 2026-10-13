@@ -9,6 +9,7 @@ export const settings = {
   effort: 'low',
   systemPrompt: 'EXTRACT',
   outputSchema: { type: 'object' },
+  dateOrder: 'DMY',
   maxPdfMB: 10,
   minImageKB: 20,
   processedLabelId: 'Label_DONE',
