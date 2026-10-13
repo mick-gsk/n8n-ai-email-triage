@@ -82,17 +82,21 @@ test('the agent has Claude, the document search and a memory keyed by the sessio
   assert.match(src('system-prompt.md'), /`search_documents`/, 'the prompt names the tool as n8n exposes it');
 });
 
-test('the agent returns its tool calls for Check answer and retries', () => {
+test('the agent returns its tool calls, retries, and hands failures to Check answer', () => {
   const agent = chat.byName['Support agent'];
   assert.equal(agent.parameters.options.returnIntermediateSteps, true, 'Check answer reads the search results');
   assert.equal(agent.parameters.text, '={{ $json.prompt }}');
   assert.equal(agent.retryOnFail, true);
-  assert.deepEqual(chat.wf.connections['Support agent'].main, [[{ node: 'Check answer', type: 'main', index: 0 }]]);
+  assert.equal(agent.onError, 'continueErrorOutput');
+  assert.deepEqual(
+    chat.wf.connections['Support agent'].main.map((branch) => branch.map((c) => c.node)),
+    [['Check answer'], ['Check answer']],
+  );
   assert.equal(chat.byName.Claude.parameters.model.value, 'claude-haiku-5-5');
 });
 
 test('only the reply text goes back to the browser', () => {
-  for (const name of ['Reply']) {
+  for (const name of ['Reply', 'Handoff reply']) {
     const { parameters } = chat.byName[name];
     assert.equal(parameters.mode, 'manual');
     assert.deepEqual(
@@ -102,4 +106,20 @@ test('only the reply text goes back to the browser', () => {
     );
     assert.notEqual(parameters.includeOtherFields, true, name);
   }
+});
+
+// Evaluates an n8n expression string ("=...{{ js }}...") for one item, enough for simple templates.
+const render = (expr, json) =>
+  expr.slice(1).replace(/\{\{([\s\S]+?)\}\}/g, (_, js) => new Function('$json', `return (${js});`)(json));
+
+test('the Slack handoff escapes customer text so it cannot ping the channel or add links', () => {
+  const textExpr = chat.byName['Notify team on Slack'].parameters.text;
+  const text = render(textExpr, {
+    reason: 'customer asked for a person',
+    sessionId: 'abc',
+    question: '<!channel> refund <https://evil.example|here> & now',
+  });
+  assert.doesNotMatch(text, /<!channel>|<https:/);
+  assert.match(text, /&lt;!channel&gt; refund/);
+  assert.match(text, /&amp; now/);
 });

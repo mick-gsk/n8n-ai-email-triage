@@ -1,9 +1,9 @@
 // Builds the two exports of the support chatbot from the sources in src/:
 //   ingest.json  Google Drive folder -> chunks with embeddings in Postgres (pgvector)
-//   chat.json    website chat -> Claude agent that answers from those chunks
+//   chat.json    website chat -> Claude agent that searches those chunks, hands off to Slack
 //
 //   node workflows/support-chatbot/build.mjs   (or npm run build for all workflows)
-import { credential, link, node, reader, workflow, writeWorkflow } from '../../lib/n8n.mjs';
+import { credential, ifCondition, link, node, reader, slackSafe, workflow, writeWorkflow } from '../../lib/n8n.mjs';
 
 const read = reader(import.meta.url);
 
@@ -174,10 +174,22 @@ writeWorkflow(
 
 const settings = {
   maxMessageChars: 1000,
+  sessionLimitPer10Min: 20,
+  globalLimitPerMinute: 30,
+  slackChannel: '#support-handoff',
   emptyMessage: 'Please type your question.',
   tooLongMessage: 'That message is too long for this chat. Please shorten it and send it again.',
-  handoffMessage: 'I could not find an answer to that in our documentation. Please contact us at support@example.com.',
+  rateLimitMessage: 'You have sent many messages in a short time. Please wait a few minutes and try again.',
+  handoffMessage:
+    'I could not find an answer to that in our documentation, so I have passed your question on to our team. ' +
+    'You can also reach us at support@example.com.',
 };
+
+const countRequests = `INSERT INTO support_chat_requests (session_id) VALUES ($1);
+DELETE FROM support_chat_requests WHERE created_at < now() - interval '1 day';
+SELECT
+  (SELECT count(*) FROM support_chat_requests WHERE session_id = $1 AND created_at > now() - interval '10 minutes')::int AS session_recent,
+  (SELECT count(*) FROM support_chat_requests WHERE created_at > now() - interval '1 minute')::int AS all_recent`;
 
 const routeRule = (route) => ({
   conditions: {
@@ -214,12 +226,24 @@ const chatNodes = [
     parameters: { mode: 'raw', jsonOutput: JSON.stringify(settings, null, 2), options: {} },
   }),
 
+  node('Count requests', 'n8n-nodes-base.postgres', 2.7, [440, 300], {
+    parameters: {
+      operation: 'executeQuery',
+      query: countRequests,
+      options: {
+        queryReplacement: "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').slice(0, 100) ] }}",
+        queryBatching: 'independently',
+      },
+    },
+    credentials: postgres,
+  }),
+
   node('Check message', 'n8n-nodes-base.code', 2, [660, 300], {
     parameters: { jsCode: read('src/check-message.js') },
   }),
 
   node('Route', 'n8n-nodes-base.switch', 3.2, [880, 300], {
-    parameters: { rules: { values: ['answer', 'reply'].map(routeRule) }, options: {} },
+    parameters: { rules: { values: ['answer', 'handoff', 'reply'].map(routeRule) }, options: {} },
   }),
 
   node('Support agent', '@n8n/n8n-nodes-langchain.agent', 3.1, [1120, 140], {
@@ -235,6 +259,8 @@ const chatNodes = [
     retryOnFail: true,
     maxTries: 3,
     waitBetweenTries: 3000,
+    // A failed model call goes to "Check answer" as { error } and becomes a handoff.
+    onError: 'continueErrorOutput',
   }),
 
   node('Claude', '@n8n/n8n-nodes-langchain.lmChatAnthropic', 1.6, [1000, 380], {
@@ -278,21 +304,43 @@ const chatNodes = [
     parameters: { jsCode: read('src/check-answer.js') },
   }),
 
-  // The Chat Trigger returns the last node's output to the browser, so the reply node keeps only
-  // the text; session id, reason and sources metadata stay server-side.
-  node('Reply', 'n8n-nodes-base.set', 3.4, [1620, 140], {
+  node('Needs the team?', 'n8n-nodes-base.if', 2.2, [1620, 140], {
+    parameters: ifCondition('needs-team', '={{ $json.route }}', 'handoff', { type: 'string', operation: 'equals' }),
+  }),
+
+  node('Notify team on Slack', 'n8n-nodes-base.slack', 2.2, [1840, 300], {
+    parameters: {
+      resource: 'message',
+      operation: 'post',
+      select: 'channel',
+      channelId: { __rl: true, mode: 'name', value: "={{ $('Settings').first().json.slackChannel }}" },
+      text: `=Support chat needs a person: ${slackSafe('reason')}\nSession: ${slackSafe('sessionId')}\nQuestion: ${slackSafe('question')}`,
+      otherOptions: { includeLinkToWorkflow: false },
+    },
+    credentials: credential('slackApi', 'Slack account'),
+    retryOnFail: true,
+    maxTries: 3,
+    waitBetweenTries: 3000,
+  }),
+
+  // The Chat Trigger returns the last node's output to the browser, so the reply nodes keep
+  // only the text; session id, reason and sources metadata stay server-side.
+  node('Handoff reply', 'n8n-nodes-base.set', 3.4, [2060, 300], {
     parameters: {
       mode: 'manual',
       assignments: {
         assignments: [
-          {
-            id: 'output',
-            name: 'output',
-            type: 'string',
-            value: "={{ $json.route === 'handoff' ? $('Settings').first().json.handoffMessage : $json.output }}",
-          },
+          { id: 'output', name: 'output', type: 'string', value: "={{ $('Settings').first().json.handoffMessage }}" },
         ],
       },
+      options: {},
+    },
+  }),
+
+  node('Reply', 'n8n-nodes-base.set', 3.4, [1840, 40], {
+    parameters: {
+      mode: 'manual',
+      assignments: { assignments: [{ id: 'output', name: 'output', type: 'string', value: '={{ $json.output }}' }] },
       options: {},
     },
   }),
@@ -300,15 +348,18 @@ const chatNodes = [
 
 const chatConnections = {
   'Chat Trigger': link('Settings'),
-  Settings: link('Check message'),
+  Settings: link('Count requests'),
+  'Count requests': link('Check message'),
   'Check message': link('Route'),
-  Route: link('Support agent', 'Reply'),
-  'Support agent': link('Check answer'),
+  Route: link('Support agent', 'Notify team on Slack', 'Reply'),
+  'Support agent': link('Check answer', 'Check answer'),
   Claude: ai('ai_languageModel', 'Support agent'),
   'Chat memory': ai('ai_memory', 'Support agent'),
   search_documents: ai('ai_tool', 'Support agent'),
   'Query embeddings': ai('ai_embedding', 'search_documents'),
-  'Check answer': link('Reply'),
+  'Check answer': link('Needs the team?'),
+  'Needs the team?': link('Notify team on Slack', 'Reply'),
+  'Notify team on Slack': link('Handoff reply'),
 };
 
 writeWorkflow(import.meta.url, 'chat.json', workflow('Support chatbot: chat', chatNodes, chatConnections));
