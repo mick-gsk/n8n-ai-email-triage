@@ -1,5 +1,5 @@
-// Builds workflow.json from the sources in src/, so the Code node logic and the
-// prompt live in normal files that can be reviewed and tested.
+// Builds workflow.json and error-workflow.json from the sources in src/, so the Code node
+// logic and the prompt live in normal files that can be reviewed and tested.
 //
 //   node scripts/build-workflow.mjs
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -208,5 +208,41 @@ const workflow = {
   meta: { templateCredsSetupCompleted: false },
 };
 
-writeFileSync(join(root, 'workflow.json'), JSON.stringify(workflow, null, 2) + '\n');
-console.log(`workflow.json: ${nodes.length} nodes`);
+// Posts to Slack when the main workflow fails outright (a Gmail, Slack or Sheets call, or a
+// Code node, throws). Failed Claude calls do not end up here; they are labelled for review.
+// n8n assigns workflow IDs on import, so the link is made by hand in the workflow settings.
+const errorWorkflow = {
+  name: 'AI Email Triage: error alert',
+  nodes: [
+    node('Error Trigger', 'n8n-nodes-base.errorTrigger', 1, [0, 300]),
+    node('Format alert', 'n8n-nodes-base.code', 2, [220, 300], {
+      parameters: { jsCode: read('src/format-error-alert.js') },
+    }),
+    node('Post to Slack', 'n8n-nodes-base.slack', 2.2, [440, 300], {
+      parameters: {
+        resource: 'message',
+        operation: 'post',
+        select: 'channel',
+        channelId: { __rl: true, mode: 'name', value: settings.slackChannel },
+        text: '={{ $json.text }}',
+        otherOptions: { includeLinkToWorkflow: false },
+      },
+      credentials: slack,
+    }),
+  ],
+  connections: {
+    'Error Trigger': link('Format alert'),
+    'Format alert': link('Post to Slack'),
+  },
+  settings: { executionOrder: 'v1' },
+  pinData: {},
+  meta: { templateCredsSetupCompleted: false },
+};
+
+for (const [file, wf] of [
+  ['workflow.json', workflow],
+  ['error-workflow.json', errorWorkflow],
+]) {
+  writeFileSync(join(root, file), JSON.stringify(wf, null, 2) + '\n');
+  console.log(`${file}: ${wf.nodes.length} nodes`);
+}
