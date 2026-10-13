@@ -9,6 +9,7 @@ unit-tested, and run in a real n8n instance before it is committed.
 | [Email triage](workflows/email-triage) | Sorts new Gmail messages with Claude: labels, Slack alert for urgent mail, reply drafts, log sheet | Gmail, Anthropic, Slack, Google Sheets |
 | [Support chatbot](workflows/support-chatbot) | Website chat that answers from your Google Drive documents with sources, hands off to Slack when it cannot | Google Drive, OpenAI embeddings, Postgres (pgvector), Anthropic, Slack |
 | [Lead intake](workflows/lead-intake) | Takes website form leads by webhook, scores them with Claude, upserts the contact and a note in HubSpot, alerts Slack on hot leads | Webhook, Anthropic, HubSpot, Slack |
+| [Invoice extraction](workflows/invoice-extraction) | Reads invoice and receipt attachments with Claude, checks totals, IBAN, VAT ID and duplicates, files them in Sheets and Drive, sends the rest to review | Gmail, Anthropic, Google Sheets, Google Drive, Slack |
 | [Error alert](shared/error-alert) | Error workflow for all of the above: posts failed runs to Slack with a link to the execution | Slack |
 
 Each folder has its own README with setup steps, configuration, design decisions and limits.

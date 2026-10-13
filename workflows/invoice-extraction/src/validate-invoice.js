@@ -5,7 +5,8 @@
 // date not before the invoice date. Every problem is collected as a reason and the item gets
 // status "review"; only a record without any reason is written to the sheet as "ok".
 // The reply is not trusted: the document it was read from may contain text aimed at the model.
-const TOLERANCE = 0.02;
+// Allowed rounding difference, in cents; amounts are compared as whole cents, not as floats.
+const TOLERANCE_CENTS = 2;
 const MAX_TEXT = 200;
 const MAX_LINE_ITEMS = 100;
 const TYPES = ['invoice', 'credit_note', 'receipt', 'not_invoice'];
@@ -24,10 +25,33 @@ const MONTHS = [
   'nov november',
   'dec december dez dezember',
 ].map((names) => names.split(' '));
-const CURRENCY_SYMBOLS = { '€': 'EUR', $: 'USD', '£': 'GBP', SFR: 'CHF', 'FR.': 'CHF' };
-// IBAN length per SEPA country.
+// Symbols that name one currency. "$", "kr", "¥" and the like are used by several currencies and
+// are not mapped; the document then goes to review unless the model gave an ISO code.
+const CURRENCY_SYMBOLS = { '€': 'EUR', '£': 'GBP', US$: 'USD', SFR: 'CHF', 'FR.': 'CHF' };
+// Current ISO 4217 currency codes (no funds codes, precious metals or test codes).
+const CURRENCIES = new Set(
+  (
+    'AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD ' +
+    'CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF ' +
+    'GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK ' +
+    'LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD ' +
+    'OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN ' +
+    'SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XCG ' +
+    'XOF XPF YER ZAR ZMW ZWG ' +
+    // Replaced recently (Bulgaria joined the euro in 2026, XCG replaced ANG in 2025); older invoices use them.
+    'BGN ANG'
+  ).split(' '),
+);
+// IBAN length per country, from the SWIFT IBAN registry (release 101). Territories that use
+// another country's IBANs (Åland: FI, Jersey: GB, French overseas departments: FR) are covered by it.
 const IBAN_LENGTHS = Object.fromEntries(
-  'AT20 BE16 BG22 CH21 CY28 CZ24 DE22 DK18 EE20 ES24 FI18 FR27 GB22 GR27 HR21 HU28 IE22 IS26 IT27 LI21 LT20 LU20 LV21 MC27 MT31 NL18 NO15 PL28 PT25 RO24 SE24 SI19 SK24'
+  (
+    'AD24 AE23 AL28 AT20 AZ28 BA20 BE16 BG22 BH22 BI27 BR29 BY28 CH21 CR22 CY28 CZ24 DE22 DJ27 DK18 DO28 ' +
+    'EE20 EG29 ES24 FI18 FK18 FO18 FR27 GB22 GE22 GI23 GL18 GR27 GT28 HN28 HR21 HU28 IE22 IL23 IQ23 IS26 ' +
+    'IT27 JO30 KW30 KZ20 LB28 LC32 LI21 LT20 LU20 LV21 LY25 MC27 MD24 ME22 MK19 MN20 MR27 MT31 MU30 NI28 ' +
+    'NL18 NO15 OM23 PK24 PL28 PS29 PT25 QA29 RO24 RS22 RU33 SA24 SC31 SD18 SE24 SI19 SK24 SM27 SO23 ST25 ' +
+    'SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20 YE30'
+  )
     .split(' ')
     .map((s) => [s.slice(0, 2), Number(s.slice(2))]),
 );
@@ -82,7 +106,9 @@ const VAT_ID_FORMATS = {
  * @property {string} supplier_vat_id normalised, e.g. DE123456789
  * @property {string} invoice_number
  * @property {string} invoice_date YYYY-MM-DD or ''
- * @property {string} due_date YYYY-MM-DD or ''
+ * @property {string} due_date YYYY-MM-DD or ''; from payment_terms_days if no date is printed
+ * @property {number | null} payment_terms_days days from the invoice date, 0 to 365
+ * @property {string} number_format "1.234,56", "1,234.56" or '': how the amounts were read
  * @property {string} currency ISO 4217 or ''
  * @property {number | null} net_amount
  * @property {number | null} vat_amount
@@ -101,6 +127,12 @@ const text = (v, max = MAX_TEXT) =>
 
 /** @param {number} n */
 const round2 = (n) => Math.round(n * 100) / 100;
+
+/** @param {number} n */
+const cents = (n) => Math.round(n * 100);
+
+/** @param {number} a @param {number} b */
+const differs = (a, b) => Math.abs(cents(a) - cents(b)) > TOLERANCE_CENTS;
 
 /** @param {number | null} n */
 const fmt = (n) => (n === null ? '?' : n.toFixed(2));
@@ -137,6 +169,7 @@ function parseAmount(raw, decimal) {
     (fraction === undefined || /^\d+$/.test(fraction));
   if (!valid) throw new Error(`"${text(raw, 40)}" does not match the number format`);
   const n = Number(groups.join('') + (fraction === undefined ? '' : `.${fraction}`));
+  if (!Number.isFinite(n)) throw new Error(`"${text(raw, 40)}" is not a usable amount`);
   return negative ? -n : n;
 }
 
@@ -182,8 +215,8 @@ function parseDate(raw, order) {
 function ibanValid(iban) {
   const country = iban.slice(0, 2);
   if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(iban)) return false;
-  if (IBAN_LENGTHS[country] && iban.length !== IBAN_LENGTHS[country]) return false;
-  if (iban.length < 15 || iban.length > 34) return false;
+  // A country outside the registry has no IBAN.
+  if (iban.length !== IBAN_LENGTHS[country]) return false;
   const digits = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => String(c.charCodeAt(0) - 55));
   let rest = 0;
   for (const c of digits) rest = (rest * 10 + Number(c)) % 97;
@@ -252,7 +285,8 @@ function validate(raw, settings, now) {
   const reasons = [];
   const type = TYPES.includes(raw.document_type) ? raw.document_type : '';
   if (!type) reasons.push(`unknown document type "${text(raw.document_type, 40)}"`);
-  const decimal = raw.number_format === '1,234.56' ? '.' : raw.number_format === '1.234,56' ? ',' : '';
+  const numberFormat = ['1.234,56', '1,234.56'].includes(raw.number_format) ? raw.number_format : '';
+  const decimal = numberFormat === '1,234.56' ? '.' : numberFormat === '1.234,56' ? ',' : '';
   if (!decimal && type !== 'not_invoice') reasons.push('number format missing');
 
   /**
@@ -273,10 +307,12 @@ function validate(raw, settings, now) {
   const amount = (label, v) => /** @type {number | null} */ (field(label, v, 'amount'));
   /** @param {string} label @param {unknown} v */
   const date = (label, v) => /** @type {string} */ (field(label, v, 'date'));
-  /** @param {unknown} v "19 %", "7,0" */
+  /** @param {unknown} v "19 %", "7,0"; null if empty or not a plain number */
   const rate = (v) => {
-    const n = parseFloat(String(v ?? '').replace(',', '.'));
-    return Number.isNaN(n) ? null : n;
+    const s = String(v ?? '')
+      .replace(/[\s%]/g, '')
+      .replace(',', '.');
+    return /^\d{1,3}(\.\d{1,2})?$/.test(s) ? Number(s) : null;
   };
   const vatLines = Array.isArray(raw.vat_lines) ? raw.vat_lines.slice(0, 20) : [];
   const lineItems = Array.isArray(raw.line_items) ? raw.line_items.slice(0, MAX_LINE_ITEMS) : [];
@@ -293,7 +329,9 @@ function validate(raw, settings, now) {
     invoice_number: text(raw.invoice_number, 60),
     invoice_date: date('invoice date', raw.invoice_date),
     due_date: date('due date', raw.due_date),
+    payment_terms_days: null,
     currency: currencyCode(raw.currency),
+    number_format: numberFormat,
     net_amount: amount('net amount', raw.net_amount),
     vat_amount: amount('VAT amount', raw.vat_amount),
     gross_amount: amount('gross amount', raw.gross_amount),
@@ -324,8 +362,11 @@ function validate(raw, settings, now) {
   if (inv.invoice_date && inv.invoice_date > new Date(now.getTime() + 86400000).toISOString().slice(0, 10))
     reasons.push(`invoice date ${inv.invoice_date} is in the future`);
 
-  const days = Number(text(raw.payment_terms_days, 5));
-  if (!inv.due_date && inv.invoice_date && Number.isInteger(days) && days > 0 && days <= 365) {
+  const terms = text(raw.payment_terms_days, 10);
+  if (/^\d{1,3}$/.test(terms) && Number(terms) <= 365) inv.payment_terms_days = Number(terms);
+  else if (terms) reasons.push(`payment terms "${terms}" are not a number of days`);
+  const days = inv.payment_terms_days;
+  if (!inv.due_date && inv.invoice_date && days !== null) {
     const due = new Date(`${inv.invoice_date}T00:00:00Z`);
     due.setUTCDate(due.getUTCDate() + days);
     inv.due_date = due.toISOString().slice(0, 10);
@@ -333,7 +374,7 @@ function validate(raw, settings, now) {
   if (inv.due_date && inv.invoice_date && inv.due_date < inv.invoice_date)
     reasons.push(`due date ${inv.due_date} is before invoice date ${inv.invoice_date}`);
 
-  if (!/^[A-Z]{3}$/.test(inv.currency)) reasons.push(`currency "${inv.currency}" is not an ISO code`);
+  if (!CURRENCIES.has(inv.currency)) reasons.push(`currency "${inv.currency}" is not an ISO 4217 code`);
 
   // Credit notes are stored with negative amounts, whichever way the document prints them.
   if (type === 'credit_note' && inv.gross_amount !== null && inv.gross_amount > 0) {
@@ -352,25 +393,20 @@ function validate(raw, settings, now) {
   if (type !== 'receipt' && (net === null || vat === null)) reasons.push('net or VAT amount missing');
   if (gross !== null && [net, vat].some((n) => n !== null && n !== 0 && Math.sign(n) !== Math.sign(gross)))
     reasons.push('amounts have mixed signs');
-  if (net !== null && vat !== null && gross !== null && Math.abs(net + vat - gross) > TOLERANCE)
+  if (net !== null && vat !== null && gross !== null && differs(net + vat, gross))
     reasons.push(`net ${fmt(net)} + VAT ${fmt(vat)} = ${fmt(round2(net + vat))}, but gross is ${fmt(gross)}`);
 
   inv.vat_lines.forEach((l, i) => {
-    if (l.rate !== null && (l.rate < 0 || l.rate > 30))
-      reasons.push(`VAT line ${i + 1}: rate ${l.rate}% is not plausible`);
-    else if (
-      l.rate !== null &&
-      l.net !== null &&
-      l.vat !== null &&
-      Math.abs((l.net * l.rate) / 100 - l.vat) > TOLERANCE
-    )
+    if (l.rate === null) reasons.push(`VAT line ${i + 1}: rate missing or unreadable`);
+    else if (l.rate > 30) reasons.push(`VAT line ${i + 1}: rate ${l.rate}% is not plausible`);
+    else if (l.net !== null && l.vat !== null && differs((l.net * l.rate) / 100, l.vat))
       reasons.push(`VAT line ${i + 1}: ${l.rate}% of ${fmt(l.net)} is not ${fmt(l.vat)}`);
   });
   /** @param {'net' | 'vat'} key */
   const lineSum = (key) => round2(inv.vat_lines.reduce((sum, l) => sum + (l[key] ?? 0), 0));
-  if (inv.vat_lines.length && vat !== null && Math.abs(lineSum('vat') - vat) > TOLERANCE)
+  if (inv.vat_lines.length && vat !== null && differs(lineSum('vat'), vat))
     reasons.push(`VAT lines add up to ${fmt(lineSum('vat'))}, but VAT total is ${fmt(vat)}`);
-  if (inv.vat_lines.length && net !== null && Math.abs(lineSum('net') - net) > TOLERANCE)
+  if (inv.vat_lines.length && net !== null && differs(lineSum('net'), net))
     reasons.push(`VAT lines add up to net ${fmt(lineSum('net'))}, but net total is ${fmt(net)}`);
 
   if (inv.iban && !ibanValid(inv.iban)) reasons.push(`IBAN ${inv.iban} is not valid`);

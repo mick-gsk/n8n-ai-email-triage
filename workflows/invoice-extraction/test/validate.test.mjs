@@ -37,6 +37,8 @@ describe('Validate', () => {
     assert.equal(inv.supplier_vat_id, 'DE123456788');
     assert.equal(inv.invoice_date, '2026-10-02');
     assert.equal(inv.due_date, '2026-10-16', 'from the payment terms in days');
+    assert.equal(inv.payment_terms_days, 14);
+    assert.equal(inv.number_format, '1.234,56');
     assert.equal(inv.currency, 'EUR');
     assert.deepEqual([inv.net_amount, inv.vat_amount, inv.gross_amount], [1250, 237.5, 1487.5]);
     assert.deepEqual(inv.vat_lines, [{ rate: 19, net: 1250, vat: 237.5 }]);
@@ -97,6 +99,12 @@ describe('Validate', () => {
       });
     }
 
+    test('an amount too large to be a number goes to review', () => {
+      const inv = gross('9'.repeat(400));
+      assert.equal(inv.gross_amount, null);
+      assert.match(inv.reasons.join(), /gross amount: .* is not a usable amount/);
+    });
+
     test('missing number format goes to review', () => {
       assert.match(gross('12,50', '').reasons.join(), /number format missing/);
     });
@@ -109,9 +117,18 @@ describe('Validate', () => {
       assert.deepEqual(inv.reasons, ['net 1250.00 + VAT 237.50 = 1487.50, but gross is 1478.50']);
     });
 
-    test('a difference of up to 0.02 is rounding', () => {
+    test('totals that do not reconcile go to review', () => {
+      const inv = german({ net_amount: '100,00', vat_amount: '19,00', gross_amount: '1.190,00', vat_lines: [] });
+      assert.equal(inv.status, 'review');
+      assert.deepEqual(inv.reasons, ['net 100.00 + VAT 19.00 = 119.00, but gross is 1190.00']);
+    });
+
+    test('a difference of up to 0.02 is rounding, compared in cents', () => {
       assert.equal(german({ gross_amount: '1.487,52' }).status, 'ok');
       assert.equal(german({ gross_amount: '1.487,53' }).status, 'review');
+      // 0.84 + 0.16 - 1.02 is 0.020000000000000018 in floating point.
+      const small = german({ net_amount: '0,84', vat_amount: '0,16', gross_amount: '1,02', vat_lines: [] });
+      assert.deepEqual(small.reasons, []);
     });
 
     test('VAT lines are checked against their rate and against the totals', () => {
@@ -125,6 +142,14 @@ describe('Validate', () => {
       });
       assert.match(split.reasons.join(), /VAT lines add up to 207\.50, but VAT total is 237\.50/);
       assert.equal(german({ vat_lines: [{ rate: '119', net: '1', vat: '1' }] }).status, 'review');
+    });
+
+    test('a VAT line needs a readable rate', () => {
+      for (const r of ['', 'n/a', '19/7']) {
+        const inv = german({ vat_lines: [{ rate: r, net: '1.250,00', vat: '237,50' }] });
+        assert.deepEqual(inv.reasons, ['VAT line 1: rate missing or unreadable'], r);
+      }
+      assert.deepEqual(german({ vat_lines: [{ rate: '19,0 %', net: '1.250,00', vat: '237,50' }] }).reasons, []);
     });
 
     test('an invoice needs net, VAT and gross', () => {
@@ -214,6 +239,19 @@ describe('Validate', () => {
       }
     });
 
+    test('payment terms are kept as a whole number of days or go to review', () => {
+      assert.equal(german({ payment_terms_days: '' }).payment_terms_days, null);
+      const immediate = german({ payment_terms_days: '0' });
+      assert.deepEqual([immediate.payment_terms_days, immediate.due_date], [0, '2026-10-02']);
+      const printed = german({ payment_terms_days: '30', due_date: '20.10.2026' });
+      assert.deepEqual([printed.payment_terms_days, printed.due_date], [30, '2026-10-20'], 'a printed date wins');
+      for (const terms of ['14 Tage', '-5', '1.5', '400']) {
+        const inv = german({ payment_terms_days: terms });
+        assert.equal(inv.payment_terms_days, null, terms);
+        assert.deepEqual(inv.reasons, [`payment terms "${terms}" are not a number of days`], terms);
+      }
+    });
+
     test('due date before invoice date goes to review', () => {
       const inv = german({ due_date: '01.10.2026' });
       assert.deepEqual(inv.reasons, ['due date 2026-10-01 is before invoice date 2026-10-02']);
@@ -242,6 +280,24 @@ describe('Validate', () => {
       ]);
       assert.equal(german({ iban: 'DE89 3704 0044 0532 0130' }).status, 'review');
       assert.equal(german({ iban: 'not an iban' }).status, 'review');
+    });
+
+    test('IBAN lengths are checked for every registry country', () => {
+      for (const iban of [
+        'AD12 0001 2030 2003 5910 0100',
+        'SM86 U032 2509 8000 0000 0270 100',
+        'VA59 0011 2300 0012 3456 78',
+        'AL47 2121 1009 0000 0002 3569 8741',
+        'ME25 5050 0001 2345 6789 51',
+        'MK07 2501 2000 0058 984',
+        'MD24 AG00 0225 1000 1310 4168',
+        'RS35 2600 0560 1001 6113 79',
+      ]) {
+        assert.deepEqual(german({ iban }).reasons, [], iban);
+      }
+      // Both pass the mod 97 check: AD needs 24 characters, and US has no IBANs.
+      assert.deepEqual(german({ iban: 'AD8112345678901' }).reasons, ['IBAN AD8112345678901 is not valid']);
+      assert.equal(german({ iban: 'US561234567890123456789' }).status, 'review');
     });
 
     test('VAT IDs are checked against the country format', () => {
@@ -277,9 +333,14 @@ describe('Validate', () => {
       assert.deepEqual(inv.reasons, ['supplier name missing', 'invoice number missing']);
     });
 
-    test('currency symbols become ISO codes; anything else goes to review', () => {
+    test('unambiguous currency symbols become ISO codes; anything else goes to review', () => {
       assert.equal(german({ currency: '€' }).currency, 'EUR');
-      assert.match(german({ currency: 'Euro' }).reasons.join(), /currency "EURO" is not an ISO code/);
+      assert.equal(german({ currency: 'US$' }).currency, 'USD');
+      assert.deepEqual(german({ currency: 'chf' }).reasons, []);
+      for (const c of ['Euro', '$', 'kr', '¥', 'XYZ']) {
+        const inv = german({ currency: c });
+        assert.deepEqual(inv.reasons, [`currency "${c.toUpperCase()}" is not an ISO 4217 code`], c);
+      }
     });
 
     test('an unknown document type goes to review', () => {

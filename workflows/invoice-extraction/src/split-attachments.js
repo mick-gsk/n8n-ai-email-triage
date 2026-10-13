@@ -11,6 +11,8 @@ const MEDIA_TYPES = {
   'image/webp': ['webp'],
   'image/gif': ['gif'],
 };
+// Types that say nothing about the content; only for these the file extension decides.
+const GENERIC_TYPES = ['', 'application/octet-stream', 'binary/octet-stream'];
 // Keeps the base64 form of an image under the API's 5 MB image limit.
 const MAX_IMAGE_BYTES = 3.75 * 1024 * 1024;
 const MAX_TEXT = 300;
@@ -36,9 +38,14 @@ const MAX_TEXT = 300;
 
 /** @param {Binary} file */
 function mediaType(file) {
-  const mime = String(file.mimeType ?? '').toLowerCase();
+  const mime = String(file.mimeType ?? '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
   if (mime in MEDIA_TYPES) return mime;
-  // Some mail systems send PDFs as application/octet-stream; the extension is the next best hint.
+  // Some mail systems send PDFs as application/octet-stream; the extension is the next best hint
+  // then. A file declared as another specific type (a Word file named x.pdf) is not guessed at.
+  if (!GENERIC_TYPES.includes(mime)) return undefined;
   const ext = String(file.fileName ?? '')
     .toLowerCase()
     .split('.')

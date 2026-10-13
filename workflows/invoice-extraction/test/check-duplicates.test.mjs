@@ -25,6 +25,30 @@ describe('Check duplicates', () => {
     assert.equal(out.reason, 'same supplier and invoice number as row 7 of the Invoices sheet');
   });
 
+  test('invoice numbers keep their separators and non-ASCII letters apart', () => {
+    const row = (invoice_number) => ({ row_number: 3, supplier_name: 'Muster Bürobedarf GmbH', invoice_number });
+    for (const [mine, theirs] of [
+      ['INV-12-34', 'INV-123-4'],
+      ['Ä-123', 'Ö-123'],
+      ['RE-2026-0042', 'RE-2026-0043'],
+    ]) {
+      assert.equal(dedupe([ok({ invoice_number: mine })], [row(theirs)])[0].status, 'ok', `${mine} / ${theirs}`);
+    }
+    for (const [mine, theirs] of [
+      ['ä-123', ' Ä 123 '],
+      ['re-2026-0042', 'RE / 2026 . 0042'],
+      ['ＲＥ－１', 'RE-1'],
+    ]) {
+      assert.equal(dedupe([ok({ invoice_number: mine })], [row(theirs)])[0].status, 'duplicate', `${mine} / ${theirs}`);
+    }
+  });
+
+  test('a sheet row without row_number is still named as a sheet row', () => {
+    const row = { supplier_name: 'Muster Bürobedarf GmbH', invoice_number: 'RE-2026-0042' };
+    const [out] = dedupe([ok()], [row]);
+    assert.equal(out.reason, 'same supplier and invoice number as a row of the Invoices sheet');
+  });
+
   test('VAT IDs decide when both sides have one', () => {
     const row = {
       row_number: 7,
@@ -43,7 +67,7 @@ describe('Check duplicates', () => {
       out.map((o) => o.status),
       ['ok', 'duplicate'],
     );
-    assert.match(out[1].reason, /another file in this run/);
+    assert.equal(out[1].reason, 'same supplier and invoice number as another file in this run');
   });
 
   test('receipts without a number match on supplier, date and total', () => {
