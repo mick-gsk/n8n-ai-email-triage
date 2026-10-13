@@ -7,13 +7,15 @@ unit-tested, and run in a real n8n instance before it is committed.
 | Workflow | What it does | Services |
 |---|---|---|
 | [Email triage](workflows/email-triage) | Sorts new Gmail messages with Claude: labels, Slack alert for urgent mail, reply drafts, log sheet | Gmail, Anthropic, Slack, Google Sheets |
+| [Support chatbot](workflows/support-chatbot) | Website chat that answers from your Google Drive documents with sources, hands off to Slack when it cannot | Google Drive, OpenAI embeddings, Postgres (pgvector), Anthropic, Slack |
 | [Error alert](shared/error-alert) | Error workflow for all of the above: posts failed runs to Slack with a link to the execution | Slack |
 
 Each folder has its own README with setup steps, configuration, design decisions and limits.
 
 ## Using a workflow
 
-1. In n8n: **Workflows → Import from file**, pick the folder's `workflow.json`.
+1. In n8n: **Workflows → Import from file**, pick the folder's `workflow.json` (some folders have
+   more than one export, such as `ingest.json` and `chat.json`).
 2. Create the credentials listed in the folder's README and select them in the nodes. The exports
    contain no credentials.
 3. Fill in the workflow's Settings node.
