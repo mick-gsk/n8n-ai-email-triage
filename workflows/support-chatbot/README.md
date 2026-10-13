@@ -132,8 +132,10 @@ the same text.
 - Sources are checked, not trusted. The model is told to cite file names, but Check answer only
   accepts names that appear in the search results of that turn, and builds the links from the stored
   metadata. An answer citing nothing that was retrieved, or containing a link, goes to the team.
-  Short replies without a source (greetings) are let through only if they contain no digits, which
-  is where invented prices, fees and deadlines would show up.
+  A reply without a source is let through only if every sentence is a greeting, thanks, goodbye or
+  offer to help from a fixed list (English and German), so "Shipping is free." goes to the team.
+  File names may contain commas; the Sources line is matched against the names the search
+  returned, not split at every comma.
 - Customer and document text are untrusted. The message reaches the agent inside
   `<customer_message>` tags with such tags removed from it, the prompt says neither the message nor
   the documents can change the rules, and the checks above do not depend on the model following
