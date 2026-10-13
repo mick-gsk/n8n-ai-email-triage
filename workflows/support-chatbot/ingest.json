@@ -93,11 +93,7 @@
         },
         "options": {
           "fields": [
-            "id",
-            "name",
-            "mimeType",
-            "webViewLink",
-            "trashed"
+            "*"
           ]
         }
       },
@@ -107,6 +103,7 @@
           "name": "Google Drive account"
         }
       },
+      "alwaysOutputData": true,
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -124,7 +121,7 @@
         "operation": "executeQuery",
         "query": "WITH removed AS (\n  DELETE FROM support_chunks\n  WHERE NOT (metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb)))\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
         "options": {
-          "queryReplacement": "={{ [ JSON.stringify($('List folder').all().map((i) => i.json.id)) ] }}"
+          "queryReplacement": "={{ [ JSON.stringify($('List folder').all().map((i) => i.json.id).filter(Boolean)) ] }}"
         }
       },
       "credentials": {
@@ -183,12 +180,26 @@
       "waitBetweenTries": 5000
     },
     {
+      "id": "loop-over-files",
+      "name": "Loop over files",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
       "id": "store-chunks",
       "name": "Store chunks",
       "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
       "typeVersion": 1.3,
       "position": [
-        900,
+        1120,
         300
       ],
       "parameters": {
@@ -211,7 +222,7 @@
       "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
       "typeVersion": 1.2,
       "position": [
-        820,
+        1040,
         520
       ],
       "parameters": {
@@ -231,7 +242,7 @@
       "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
       "typeVersion": 1.1,
       "position": [
-        980,
+        1200,
         520
       ],
       "parameters": {
@@ -270,7 +281,7 @@
       "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
       "typeVersion": 1,
       "position": [
-        1060,
+        1280,
         700
       ],
       "parameters": {
@@ -285,14 +296,14 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.7,
       "position": [
-        1140,
+        1360,
         300
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH removed AS (\n  DELETE FROM support_chunks\n  WHERE metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb))\n    AND metadata ->> 'ingest_run' IS DISTINCT FROM $2\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
+        "query": "WITH chunks AS (\n  SELECT id, CASE WHEN metadata ->> 'ingest_run' ~ '^[0-9]+$' THEN (metadata ->> 'ingest_run')::bigint END AS run\n  FROM support_chunks\n  WHERE metadata ->> 'file_id' = $1\n), newest AS (\n  SELECT GREATEST($2::bigint, max(run)) AS run FROM chunks\n), removed AS (\n  DELETE FROM support_chunks t\n  USING chunks c, newest n\n  WHERE t.id = c.id AND (c.run IS NULL OR c.run < n.run)\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
         "options": {
-          "queryReplacement": "={{ [ JSON.stringify($('Select files').all().map((i) => i.json.file_id)), String($execution.id) ] }}"
+          "queryReplacement": "={{ [ $('Select files').item.json.file_id, String($execution.id) ] }}"
         }
       },
       "credentials": {
@@ -369,6 +380,18 @@
       "main": [
         [
           {
+            "node": "Loop over files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop over files": {
+      "main": [
+        [],
+        [
+          {
             "node": "Store chunks",
             "type": "main",
             "index": 0
@@ -381,6 +404,17 @@
         [
           {
             "node": "Remove old chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove old chunks": {
+      "main": [
+        [
+          {
+            "node": "Loop over files",
             "type": "main",
             "index": 0
           }

@@ -5,9 +5,16 @@
 // the stored metadata, never taken from the model. Everything else, including a HANDOFF reply, a
 // failed model call and an answer with a link in it, goes to the team instead.
 const MAX_ANSWER_CHARS = 1500;
-// Short replies without a source are allowed for greetings and thanks, but not if they contain
-// numbers, which is where invented prices and deadlines would show up.
+// Replies without a source are only allowed when every sentence is small talk from this list
+// (greeting, thanks, goodbye, offer to help), in English or German. Anything else, however short,
+// could be an invented fact ("Shipping is free.") and goes to the team.
 const MAX_UNSOURCED_CHARS = 200;
+const SMALL_TALK = [
+  /^(hi|hello|hey|good (morning|afternoon|evening)|hallo|guten (morgen|tag|abend)|moin|servus)( there)?$/,
+  /^((thank you|thanks)( (so|very) much)?( for (reaching out|your message|contacting us))?|you'?re welcome|my pleasure|glad (i could|to) help|danke( schön| sehr)?|gern geschehen|gerne)$/,
+  /^(goodbye|bye|have a (nice|great|good) day|auf wiedersehen|tschüss|einen schönen tag( noch)?)$/,
+  /^(how can i help( you)?( today)?|what can i do for you( today)?|is there anything else i can help( you)? with|can i help with anything else|wie kann ich (dir|ihnen) helfen|was kann ich für (dich|sie) tun|kann ich (dir|ihnen) sonst noch helfen)$/,
+];
 const SOURCE_URL = /^https:\/\/(docs|drive)\.google\.com\/[^\s()]*$/;
 
 /**
@@ -28,31 +35,85 @@ const SOURCE_URL = /^https:\/\/(docs|drive)\.google\.com\/[^\s()]*$/;
  */
 
 /**
- * File names and links of every chunk in the tool results. The vector store tool returns
- * JSON-encoded documents nested in JSON strings, so strings are parsed wherever they look like JSON.
- * @param {unknown} value
- * @param {Map<string, string>} found file_name -> source_url
+ * @param {unknown} v
+ * @returns {any} the parsed value, v itself if it is not a string, undefined if it is not JSON
  */
-function collectSources(value, found = new Map()) {
-  if (typeof value === 'string') {
-    const s = value.trim();
-    if (s.startsWith('{') || s.startsWith('[')) {
-      try {
-        collectSources(JSON.parse(s), found);
-      } catch {
-        // not JSON, ignore
-      }
+const parseJson = (v) => {
+  if (typeof v !== 'string') return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return undefined;
+  }
+};
+
+/** @param {unknown} value */
+const asList = (value) => {
+  const v = parseJson(value);
+  return Array.isArray(v) ? v : v === undefined ? [] : [v];
+};
+
+/**
+ * File names and links of every chunk in the tool results. Only the known layers of the PGVector
+ * tool output are read: the observation (a JSON string of `[{ response: [...] }]`), the text
+ * blocks in `response` (`{ type: 'text', text }`), and the document in each block's text
+ * (`{ pageContent, metadata }`). Metadata comes only from that document; pageContent is document
+ * text and is never parsed, so a document cannot pose as another file.
+ * @param {unknown[]} observations
+ */
+function collectSources(observations) {
+  /** @type {Map<string, string>} file_name -> source_url */
+  const found = new Map();
+  for (const entry of observations.flatMap(asList)) {
+    const blocks = entry && typeof entry === 'object' && 'response' in entry ? asList(entry.response) : [entry];
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object' || block.type !== 'text') continue;
+      const doc = parseJson(block.text);
+      if (!doc || typeof doc !== 'object' || typeof doc.pageContent !== 'string') continue;
+      const meta = doc.metadata;
+      if (meta && typeof meta === 'object' && typeof meta.file_name === 'string')
+        found.set(meta.file_name, typeof meta.source_url === 'string' ? meta.source_url : '');
     }
-  } else if (Array.isArray(value)) {
-    for (const v of value) collectSources(v, found);
-  } else if (value && typeof value === 'object') {
-    const meta = /** @type {{ metadata?: { file_name?: unknown, source_url?: unknown } }} */ (value).metadata;
-    if (meta && typeof meta.file_name === 'string')
-      found.set(meta.file_name, typeof meta.source_url === 'string' ? meta.source_url : '');
-    for (const v of Object.values(value)) collectSources(v, found);
   }
   return found;
 }
+
+/**
+ * The retrieved file names listed in a "Sources:" line. File names can contain commas, so the line
+ * is not simply split: runs of comma-separated parts are joined back and kept when they equal a
+ * retrieved name, the longest run first. Parts that match nothing are ignored.
+ * @param {string} line
+ * @param {Map<string, string>} retrieved
+ */
+function citedNames(line, retrieved) {
+  const parts = line.split(',');
+  /** @type {string[]} */
+  const cited = [];
+  for (let i = 0; i < parts.length;) {
+    let next = i + 1;
+    for (let j = parts.length; j > i; j--) {
+      const name = parts.slice(i, j).join(',').trim().replace(/^`|`$/g, '');
+      if (retrieved.has(name)) {
+        if (!cited.includes(name)) cited.push(name);
+        next = j;
+        break;
+      }
+    }
+    i = next;
+  }
+  return cited;
+}
+
+/** @param {string} body */
+const isSmallTalk = (body) =>
+  body.length <= MAX_UNSOURCED_CHARS &&
+  body
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .split(/[.!?,;:]+/)
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .every((s) => SMALL_TALK.some((re) => re.test(s)));
 
 /** @param {string} s */
 const escapeMarkdown = (s) => s.replace(/([\\[\]()*_`])/g, '\\$1');
@@ -80,13 +141,10 @@ function check(res) {
   if (/https?:\/\/|www\./i.test(body)) return handoff('answer contained a link');
 
   if (!sourcesLine) {
-    if (body.length <= MAX_UNSOURCED_CHARS && !/\d/.test(body))
-      return { route: 'answer', reason: '', output: body, sources: [] };
+    if (isSmallTalk(body)) return { route: 'answer', reason: '', output: body, sources: [] };
     return handoff('answer without a source');
   }
-  const cited = [...new Set(sourcesLine[1].split(',').map((s) => s.trim().replace(/^`|`$/g, '')))].filter((name) =>
-    retrieved.has(name),
-  );
+  const cited = citedNames(sourcesLine[1], retrieved);
   if (!cited.length) return handoff('answer cites no document the search returned');
 
   const links = cited.map((name) => {

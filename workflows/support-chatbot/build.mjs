@@ -25,14 +25,24 @@ const folder = { __rl: true, mode: 'id', value: FOLDER_ID };
 
 // SQL that deletes chunks. Each run tags its chunks with the execution id, so old chunks are only
 // removed once the new ones are stored; a file never has no chunks while it is being updated.
-const removeOldChunks = `WITH removed AS (
-  DELETE FROM ${TABLE}
-  WHERE metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb))
-    AND metadata ->> 'ingest_run' IS DISTINCT FROM $2
+// Two runs can store the same file at the same time (Drive Trigger during the nightly sync), so
+// the cleanup keeps the newest run's chunks, not its own: whichever run cleans up last, one set
+// remains. Execution ids increase, so the newest run is the one with the highest id.
+const removeOldChunks = `WITH chunks AS (
+  SELECT id, CASE WHEN metadata ->> 'ingest_run' ~ '^[0-9]+$' THEN (metadata ->> 'ingest_run')::bigint END AS run
+  FROM ${TABLE}
+  WHERE metadata ->> 'file_id' = $1
+), newest AS (
+  SELECT GREATEST($2::bigint, max(run)) AS run FROM chunks
+), removed AS (
+  DELETE FROM ${TABLE} t
+  USING chunks c, newest n
+  WHERE t.id = c.id AND (c.run IS NULL OR c.run < n.run)
   RETURNING 1
 )
 SELECT count(*)::int AS removed_chunks FROM removed`;
 
+// An empty ID list (empty folder) deletes every chunk.
 const forgetRemovedFiles = `WITH removed AS (
   DELETE FROM ${TABLE}
   WHERE NOT (metadata ->> 'file_id' IN (SELECT jsonb_array_elements_text($1::jsonb)))
@@ -67,9 +77,12 @@ const ingestNodes = [
       queryString: '',
       returnAll: true,
       filter: { folderId: folder, whatToSearch: 'files', includeTrashed: false },
-      options: { fields: ['id', 'name', 'mimeType', 'webViewLink', 'trashed'] },
+      // All fields, because the field list offers no `size`, which Select files needs.
+      options: { fields: ['*'] },
     },
     credentials: drive,
+    // An empty folder still runs "Forget removed files", which then deletes every chunk.
+    alwaysOutputData: true,
     retryOnFail: true,
     maxTries: 3,
     waitBetweenTries: 5000,
@@ -79,7 +92,9 @@ const ingestNodes = [
     parameters: {
       operation: 'executeQuery',
       query: forgetRemovedFiles,
-      options: { queryReplacement: "={{ [ JSON.stringify($('List folder').all().map((i) => i.json.id)) ] }}" },
+      options: {
+        queryReplacement: "={{ [ JSON.stringify($('List folder').all().map((i) => i.json.id).filter(Boolean)) ] }}",
+      },
     },
     credentials: postgres,
     executeOnce: true,
@@ -101,19 +116,25 @@ const ingestNodes = [
     waitBetweenTries: 5000,
   }),
 
-  node('Store chunks', '@n8n/n8n-nodes-langchain.vectorStorePGVector', 1.3, [900, 300], {
+  // One file per pass through Store chunks and Remove old chunks, so the loader's metadata
+  // expressions and the cleanup always refer to that one file.
+  node('Loop over files', 'n8n-nodes-base.splitInBatches', 3, [900, 300], {
+    parameters: { batchSize: 1, options: {} },
+  }),
+
+  node('Store chunks', '@n8n/n8n-nodes-langchain.vectorStorePGVector', 1.3, [1120, 300], {
     parameters: { mode: 'insert', tableName: TABLE, embeddingBatchSize: 100, options: {} },
     credentials: postgres,
     // Keeps the run going to "Remove old chunks" when a file turned out empty.
     alwaysOutputData: true,
   }),
 
-  node('Embeddings', '@n8n/n8n-nodes-langchain.embeddingsOpenAi', 1.2, [820, 520], {
+  node('Embeddings', '@n8n/n8n-nodes-langchain.embeddingsOpenAi', 1.2, [1040, 520], {
     parameters: { model: EMBEDDING_MODEL, options: {} },
     credentials: openAi,
   }),
 
-  node('Document loader', '@n8n/n8n-nodes-langchain.documentDefaultDataLoader', 1.1, [980, 520], {
+  node('Document loader', '@n8n/n8n-nodes-langchain.documentDefaultDataLoader', 1.1, [1200, 520], {
     parameters: {
       dataType: 'binary',
       binaryMode: 'specificField',
@@ -122,6 +143,8 @@ const ingestNodes = [
       textSplittingMode: 'custom',
       options: {
         metadata: {
+          // Through the paired item of Select files; $('Loop over files').item stays empty in
+          // this sub-node (n8n 2.43). With one file per pass, item 0 is that file.
           metadataValues: [
             { name: 'file_id', value: "={{ $('Select files').item.json.file_id }}" },
             { name: 'file_name', value: "={{ $('Select files').item.json.file_name }}" },
@@ -133,17 +156,16 @@ const ingestNodes = [
     },
   }),
 
-  node('Text splitter', '@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter', 1, [1060, 700], {
+  node('Text splitter', '@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter', 1, [1280, 700], {
     parameters: { chunkSize: 1000, chunkOverlap: 150, options: {} },
   }),
 
-  node('Remove old chunks', 'n8n-nodes-base.postgres', 2.7, [1140, 300], {
+  node('Remove old chunks', 'n8n-nodes-base.postgres', 2.7, [1360, 300], {
     parameters: {
       operation: 'executeQuery',
       query: removeOldChunks,
       options: {
-        queryReplacement:
-          "={{ [ JSON.stringify($('Select files').all().map((i) => i.json.file_id)), String($execution.id) ] }}",
+        queryReplacement: "={{ [ $('Select files').item.json.file_id, String($execution.id) ] }}",
       },
     },
     credentials: postgres,
@@ -157,8 +179,11 @@ const ingestConnections = {
   'Sync now': link('List folder'),
   'List folder': link(['Select files', 'Forget removed files']),
   'Select files': link('Download file'),
-  'Download file': link('Store chunks'),
+  'Download file': link('Loop over files'),
+  // Output 0 ("done") ends the run, output 1 ("loop") gets the next file.
+  'Loop over files': link([], 'Store chunks'),
   'Store chunks': link('Remove old chunks'),
+  'Remove old chunks': link('Loop over files'),
   Embeddings: ai('ai_embedding', 'Store chunks'),
   'Document loader': ai('ai_document', 'Store chunks'),
   'Text splitter': ai('ai_textSplitter', 'Document loader'),
@@ -185,7 +210,11 @@ const settings = {
     'You can also reach us at support@example.com.',
 };
 
-const countRequests = `INSERT INTO support_chat_requests (session_id) VALUES ($1);
+// The advisory lock makes concurrent messages count one after another; without it, a burst of
+// messages could all count before any of them is inserted and all pass the limit. The lock is
+// held until the node's transaction ends, after the counts.
+const countRequests = `INSERT INTO support_chat_requests (session_id)
+  SELECT $1 FROM (SELECT pg_advisory_xact_lock(hashtext('support_chat_requests'))) AS serialized;
 DELETE FROM support_chat_requests WHERE created_at < now() - interval '1 day';
 SELECT
   (SELECT count(*) FROM support_chat_requests WHERE session_id = $1 AND created_at > now() - interval '10 minutes')::int AS session_recent,
@@ -231,8 +260,10 @@ const chatNodes = [
       operation: 'executeQuery',
       query: countRequests,
       options: {
-        queryReplacement: "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').slice(0, 100) ] }}",
-        queryBatching: 'independently',
+        // The same cleaning as in Check message, so variants of one session id share a counter.
+        queryReplacement:
+          "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').replace(/[\\u0000-\\u0008\\u000b-\\u001f\\u007f]/g, ' ').trim().slice(0, 100) ] }}",
+        queryBatching: 'transaction',
       },
     },
     credentials: postgres,

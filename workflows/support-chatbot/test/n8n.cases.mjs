@@ -83,6 +83,7 @@ export const cases = [
       );
       const [embedRequest] = run.requests.filter((r) => r.path === '/v1/embeddings');
       assert.equal(embedRequest.body.model, 'text-embedding-3-small');
+      assert.equal(run.runData['Remove old chunks'].length, 2, 'one pass of the loop per file');
       assert.equal(run.out('Remove old chunks')[0].removed_chunks, 0);
 
       const rows = JSON.parse(
@@ -93,6 +94,9 @@ export const cases = [
       assert.equal(rows[0].file_name, 'refund-policy.md');
       assert.equal(rows[0].source_url, 'https://drive.google.com/file/d/1RefundPolicy/view');
       assert.ok(rows[0].ingest_run, 'chunks carry the run that stored them');
+      assert.equal(rows[1].file_id, '1Shipping', "each file gets its own metadata, not the first file's");
+      assert.equal(rows[1].file_name, 'shipping.md');
+      assert.equal(rows[1].source_url, 'https://drive.google.com/file/d/1Shipping/view');
       assert.equal(await sql(run, 'SELECT vector_dims(embedding) FROM support_chunks LIMIT 1'), '1536');
     },
   },
@@ -236,6 +240,22 @@ export const cases = [
         await sql(run, "SELECT count(*) FROM support_chunks WHERE metadata->>'file_id' = '1RefundPolicy'"),
         '1',
       );
+    },
+  },
+  {
+    // List folder outputs one empty item when the folder is empty (alwaysOutputData); the stub
+    // stands in for that item.
+    name: 'ingest: a sync of an empty folder forgets every chunk',
+    workflow: 'ingest.json',
+    trigger: 'Nightly sync',
+    input: [{}],
+    stubs: { 'List folder': [{}] },
+    http: embeddings,
+    async check(run, assert) {
+      assert.deepEqual(run.out('Select files'), []);
+      assert.equal(run.ran('Store chunks'), false);
+      assert.equal(run.out('Forget removed files')[0].removed_chunks, 1);
+      assert.equal(await sql(run, 'SELECT count(*) FROM support_chunks'), '0');
     },
   },
 ];
