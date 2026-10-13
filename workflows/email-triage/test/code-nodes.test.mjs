@@ -190,6 +190,7 @@ test('parse: IBANs are caught in any case and with any separator', () => {
     'DE89-3704-0044-0532-0130-00',
     'DE89370400440532013000',
     'gb82.west.1234.5698.7654.32',
+    'DE89 3704 0044 0532 0130 00 invoice 2',
   ]) {
     const draft = `Please pay to ${iban}, thanks.`;
     const [out] = parse([

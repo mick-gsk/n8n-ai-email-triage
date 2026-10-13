@@ -15,16 +15,17 @@ const LINK = /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a
 // IBAN-shaped: country code, check digits, 11 to 30 more characters, in any case and with
 // spaces, dashes or dots between them. Real IBANs are mostly digits with at most four letters
 // in a row (bank codes like WEST), which keeps ordinary sentences from matching.
-const IBAN_CANDIDATE = /\b[a-z]{2}\d{2}(?:[ .-]?[a-z0-9]){11,30}/gi;
+const IBAN_CANDIDATE = /\b[a-z]{2}\d{2}(?:[ .-]?[a-z0-9])+/gi;
 
 /** @param {string} candidate */
 function looksLikeIban(candidate) {
-  // The match can run into the next word ("... 00 Best regards"), so trailing letters are cut.
-  const bban = candidate
-    .replace(/[ .-]/g, '')
-    .slice(4)
-    .replace(/[a-z]+$/i, '');
-  return bban.length >= 11 && !/[a-z]{5}/i.test(bban) && (bban.match(/\d/g) ?? []).length >= 8;
+  // The match runs on into the following words ("... 00 invoice 2"), so it is cut where five
+  // letters in a row start, then trailing letters are dropped and at most 30 characters kept.
+  let bban = candidate.replace(/[ .-]/g, '').slice(4);
+  const word = bban.search(/[a-z]{5}/i);
+  if (word !== -1) bban = bban.slice(0, word);
+  bban = bban.replace(/[a-z]+$/i, '').slice(0, 30);
+  return bban.length >= 11 && (bban.match(/\d/g) ?? []).length >= 8;
 }
 
 /** @param {string} text */
