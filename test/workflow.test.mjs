@@ -13,6 +13,24 @@ test('workflow.json is in sync with src/ (run npm run build)', () => {
   assert.equal(settings.systemPrompt, readFileSync(new URL('../src/prompt.md', import.meta.url), 'utf8').trim());
 });
 
+test('Ask Claude retries, times out and hands failures on instead of stopping', () => {
+  const ask = byName['Ask Claude'];
+  assert.equal(ask.retryOnFail, true);
+  assert.ok(ask.maxTries >= 3 && ask.maxTries <= 5, 'n8n allows 2 to 5 tries');
+  assert.ok(ask.waitBetweenTries > 0 && ask.waitBetweenTries <= 5000, 'n8n caps the wait at 5000 ms');
+  assert.equal(ask.onError, 'continueRegularOutput', 'a failed email must still be labelled and logged');
+  assert.ok(ask.parameters.options.timeout > 0);
+  assert.ok(ask.parameters.options.batching.batch.batchSize > 0);
+});
+
+test('trigger only picks up unread inbox mail and processed mail is labelled', () => {
+  const { filters } = byName['Gmail Trigger'].parameters;
+  assert.equal(filters.readStatus, 'unread');
+  assert.deepEqual(filters.labelIds, ['INBOX']);
+  assert.equal(byName['Gmail Trigger'].parameters.simple, false, 'labelIds are needed to skip mail that was already processed');
+  assert.ok(workflow.connections['Parse AI result'].main[0].some((c) => c.node === 'Add Gmail label'));
+});
+
 test('every connection points to an existing node', () => {
   for (const [from, { main }] of Object.entries(workflow.connections)) {
     assert.ok(byName[from], `unknown source ${from}`);
@@ -58,4 +76,15 @@ test('Slack alert escapes email fields so they cannot ping the channel or add li
 
 test('Google Sheets writes values as text, not formulas', () => {
   assert.equal(byName['Log to Google Sheets'].parameters.options.cellFormat, 'RAW');
+});
+
+test('eval set is well formed and covers every category', () => {
+  const cases = JSON.parse(readFileSync(new URL('../eval/emails.json', import.meta.url), 'utf8'));
+  const settings = JSON.parse(byName.Settings.parameters.jsonOutput);
+  for (const c of cases) {
+    assert.ok(c.from && c.subject && c.body, `incomplete case: ${c.subject}`);
+    assert.ok(c.expected.category in settings.labels, `unknown category in "${c.subject}"`);
+    assert.ok(['high', 'normal', 'low'].includes(c.expected.priority), `unknown priority in "${c.subject}"`);
+  }
+  assert.deepEqual([...new Set(cases.map((c) => c.expected.category))].sort(), Object.keys(settings.labels).sort());
 });

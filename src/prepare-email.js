@@ -7,8 +7,12 @@ const MAX_CHARS = 6000;
 const stripDelimiters = (s) => String(s).replace(/<\/?\s*(email|from|subject|body)\b[^>]*>/gi, ' ');
 
 const settings = $('Settings').first().json;
+// In production the trigger only returns mail received since the last poll. A manual
+// "Execute workflow" run fetches the newest unread email again, though, so mail that already
+// carries one of our labels is skipped instead of getting a second draft, alert and log row.
+const triageLabels = new Set(Object.values(settings.labels ?? {}));
 
-return $('Gmail Trigger').all().map((item) => {
+return $('Gmail Trigger').all().filter((item) => !(item.json.labelIds ?? []).some((id) => triageLabels.has(id))).map((item) => {
   const m = item.json;
   const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
   const subject = m.subject ?? m.Subject ?? '';
