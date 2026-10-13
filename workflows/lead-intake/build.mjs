@@ -34,7 +34,9 @@ const settings = {
     scoreProperty: 'ai_lead_score',
     intentProperty: 'ai_lead_intent',
     hotLifecycleStage: 'marketingqualifiedlead',
+    contactUrl: 'https://app.hubspot.com/contacts/YOUR_PORTAL_ID/record/0-1/',
   },
+  slackChannel: '#sales-leads',
 };
 
 const hubspotAuth = {
@@ -160,6 +162,32 @@ const nodes = [
     '/crm/v3/objects/contacts/batch/upsert',
     '={{ JSON.stringify($json.upsert) }}',
   ),
+
+  node('Build note', 'n8n-nodes-base.code', 2, [2640, 320], {
+    parameters: { jsCode: read('src/build-note.js') },
+  }),
+
+  hubspotPost('Add note', [2860, 320], '/crm/v3/objects/notes', '={{ JSON.stringify($json.note) }}'),
+
+  node('Alert?', 'n8n-nodes-base.if', 2.2, [3080, 320], {
+    parameters: ifCondition('alert', "={{ $('Build note').item.json.alert }}", '', {
+      type: 'string',
+      operation: 'notEmpty',
+      singleValue: true,
+    }),
+  }),
+
+  node('Alert on Slack', 'n8n-nodes-base.slack', 2.7, [3300, 300], {
+    parameters: {
+      resource: 'message',
+      operation: 'post',
+      select: 'channel',
+      channelId: { __rl: true, mode: 'name', value: "={{ $('Settings').first().json.slackChannel }}" },
+      text: "={{ $('Build note').item.json.slackText }}",
+      otherOptions: { includeLinkToWorkflow: false },
+    },
+    credentials: credential('slackApi', 'Slack account'),
+  }),
 ];
 
 const connections = {
@@ -175,6 +203,10 @@ const connections = {
   'Parse qualification': link('Spam?'),
   'Spam?': link('Skip spam', 'Build contact'),
   'Build contact': link('Upsert contact'),
+  'Upsert contact': link('Build note'),
+  'Build note': link('Add note'),
+  'Add note': link('Alert?'),
+  'Alert?': link('Alert on Slack', null),
 };
 
 writeWorkflow(import.meta.url, 'workflow.json', workflow('Website lead intake (HubSpot + Claude)', nodes, connections));

@@ -1,6 +1,6 @@
 // Runs of workflow.json in a real n8n instance (npm run check:n8n). The webhook emits the request,
-// HubSpot and Claude are answered by a local mock, Respond to Webhook is replaced by a node that
-// records what it would send.
+// HubSpot and Claude are answered by a local mock, Respond to Webhook and Slack are replaced by
+// nodes that record what they would send.
 import { readFileSync } from 'node:fs';
 
 const workflow = JSON.parse(readFileSync(new URL('../workflow.json', import.meta.url), 'utf8'));
@@ -8,7 +8,11 @@ const exported = JSON.parse(workflow.nodes.find((n) => n.name === 'Settings').pa
 
 const secret = 'test-secret-5f0c9a7e21';
 // The exported secret is a placeholder the workflow refuses to run with, so cases use their own.
-const settings = { ...exported, webhookSecret: secret };
+const settings = {
+  ...exported,
+  webhookSecret: secret,
+  hubspot: { ...exported.hubspot, contactUrl: 'https://app.hubspot.com/contacts/123/record/0-1/' },
+};
 
 const request = (body, headers = { 'x-lead-secret': secret }) => [
   {
@@ -43,18 +47,20 @@ const noContact = { body: { total: 0, results: [] } };
 const upserted = (id, isNew) => () => ({
   body: { status: 'COMPLETE', results: [{ id, new: isNew, properties: {} }] },
 });
+const noteCreated = { body: { id: '9001' } };
 
 const hubspot = (requests, path) => requests.filter((r) => r.host === 'api.hubapi.com' && r.path === path);
 
 export const cases = [
   {
-    name: 'hot lead from a new contact: 202, contact created as MQL',
+    name: 'hot lead from a new contact: 202, contact created as MQL, note, Slack alert',
     input: request(hotForm),
     stubs: { Settings: [settings] },
     http: {
       'POST api.hubapi.com/crm/v3/objects/contacts/search': () => noContact,
       'POST api.anthropic.com/v1/messages': () => claudeSays(hot),
       'POST api.hubapi.com/crm/v3/objects/contacts/batch/upsert': upserted('101', true),
+      'POST api.hubapi.com/crm/v3/objects/notes': () => noteCreated,
     },
     check(run, assert) {
       const [response] = run.out('Respond');
@@ -84,10 +90,19 @@ export const cases = [
         ai_lead_intent: 'buy',
         lifecyclestage: 'marketingqualifiedlead',
       });
+
+      const [note] = hubspot(run.requests, '/crm/v3/objects/notes');
+      assert.equal(note.body.associations[0].to.id, '101');
+      assert.match(note.body.properties.hs_note_body, /fit 86\/100, intent buy/);
+
+      const [alert] = run.out('Alert on Slack');
+      assert.equal(alert.sent.channelId, '#sales-leads');
+      assert.match(alert.sent.text, /^:fire: \*Hot lead\* \(fit 86\/100\): Jana Weber, Bäckerei Weber/);
+      assert.match(alert.sent.text, /<https:\/\/app\.hubspot\.com\/contacts\/123\/record\/0-1\/101\|Open in HubSpot>$/);
     },
   },
   {
-    name: 'existing customer is updated without moving the lifecycle stage back',
+    name: 'existing customer is updated without moving the lifecycle stage back, no alert',
     input: request({
       email: 'tom@shop.example',
       first_name: 'Tom',
@@ -111,6 +126,7 @@ export const cases = [
           next_step: 'Reply with options and ask about scope.',
         }),
       'POST api.hubapi.com/crm/v3/objects/contacts/batch/upsert': upserted('55', false),
+      'POST api.hubapi.com/crm/v3/objects/notes': () => noteCreated,
     },
     check(run, assert) {
       const [claude] = run.requests.filter((r) => r.host === 'api.anthropic.com');
@@ -122,6 +138,8 @@ export const cases = [
         ai_lead_score: '55',
         ai_lead_intent: 'info',
       });
+      assert.equal(hubspot(run.requests, '/crm/v3/objects/notes')[0].body.associations[0].to.id, '55');
+      assert.equal(run.out('Alert on Slack').length, 0);
     },
   },
   {
@@ -191,13 +209,14 @@ export const cases = [
     },
   },
   {
-    name: 'Claude failing still saves the lead, without score',
+    name: 'Claude failing still saves the lead and asks for review on Slack',
     input: request(hotForm),
     stubs: { Settings: [settings] },
     http: {
       'POST api.hubapi.com/crm/v3/objects/contacts/search': () => noContact,
       'POST api.anthropic.com/v1/messages': () => ({ status: 400, body: { error: { message: 'bad request' } } }),
       'POST api.hubapi.com/crm/v3/objects/contacts/batch/upsert': upserted('102', true),
+      'POST api.hubapi.com/crm/v3/objects/notes': () => noteCreated,
     },
     check(run, assert) {
       const [parsed] = run.out('Parse qualification');
@@ -206,6 +225,7 @@ export const cases = [
       const [upsert] = hubspot(run.requests, '/crm/v3/objects/contacts/batch/upsert');
       assert.equal(upsert.body.inputs[0].properties.lifecyclestage, 'lead');
       assert.equal(upsert.body.inputs[0].properties.ai_lead_score, undefined);
+      assert.match(run.out('Alert on Slack')[0].sent.text, /^:warning: \*Lead needs review\*/);
     },
   },
   {
@@ -225,6 +245,8 @@ export const cases = [
       assert.equal(run.status, 'error');
       assert.equal(hubspot(run.requests, '/crm/v3/objects/contacts/batch/upsert').length, 3);
       assert.equal(run.error.node?.name ?? run.error.node, 'Upsert contact');
+      assert.equal(run.ran('Add note'), false);
+      assert.equal(run.ran('Alert on Slack'), false);
     },
   },
 ];

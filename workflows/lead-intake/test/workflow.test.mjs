@@ -50,7 +50,7 @@ test('Ask Claude retries, times out and hands failures on instead of stopping', 
 });
 
 test('HubSpot calls retry, time out, and stop the run when they still fail', () => {
-  for (const name of ['Find contact', 'Upsert contact']) {
+  for (const name of ['Find contact', 'Upsert contact', 'Add note']) {
     const n = byName[name];
     assert.match(n.parameters.url, /^https:\/\/api\.hubapi\.com\/crm\/v3\/objects\//, name);
     assert.equal(n.parameters.nodeCredentialType, 'hubspotAppToken', name);
@@ -62,12 +62,19 @@ test('HubSpot calls retry, time out, and stop the run when they still fail', () 
   assert.match(byName['Upsert contact'].parameters.url, /\/contacts\/batch\/upsert$/);
 });
 
-test('spam goes nowhere near HubSpot', () => {
+test('spam goes nowhere near HubSpot or Slack', () => {
   assert.deepEqual(next('Parse qualification'), ['Spam?']);
   assert.deepEqual(next('Spam?', 0), ['Skip spam']);
   assert.deepEqual(next('Skip spam'), []);
   assert.deepEqual(next('Spam?', 1), ['Build contact']);
   assert.match(byName['Spam?'].parameters.conditions.conditions[0].leftValue, /!\$json\.needs_review/);
+});
+
+test('Slack only posts the escaped text built in Build note', () => {
+  assert.deepEqual(next('Add note'), ['Alert?']);
+  assert.deepEqual(next('Alert?', 0), ['Alert on Slack']);
+  assert.equal(byName['Alert on Slack'].parameters.text, "={{ $('Build note').item.json.slackText }}");
+  assert.equal(byName['Alert on Slack'].parameters.otherOptions.includeLinkToWorkflow, false);
 });
 
 test('hot score threshold and HubSpot property names are configured', () => {

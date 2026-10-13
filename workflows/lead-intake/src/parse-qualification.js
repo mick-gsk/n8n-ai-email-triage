@@ -1,7 +1,7 @@
 // @ts-check
 // n8n Code node "Parse qualification" (mode: run once for all items).
 // Turns Claude's reply into a validated qualification. A failed call or a malformed reply sets
-// needs_review: the lead is still saved to HubSpot, without score or intent, for a human to check.
+// needs_review: the lead is still saved to HubSpot, without score or intent, and a human is told.
 // The reply is not trusted either: the form it was generated from may contain instructions aimed
 // at the model, so every field is checked or clamped here, whatever the model says.
 
