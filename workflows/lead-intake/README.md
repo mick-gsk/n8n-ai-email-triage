@@ -10,7 +10,7 @@ and gets a note with the summary. Hot leads are posted to Slack. Spam is not wri
 flowchart LR
     W[Lead webhook] --> S[Settings] --> V[Validate lead] --> R[Respond] --> A{Accepted?}
     A -- yes --> F[Find contact] --> P[Prepare qualification] --> C[Ask Claude] --> Q[Parse qualification]
-    A -- no --> M{Not configured?} -- yes --> E[Report missing secret]
+    A -- no --> M{Not configured?} -- yes --> E[Report missing settings]
     Q --> X{Spam?} -- yes --> K[Skip spam]
     X -- no --> B[Build contact] --> U[Upsert contact] --> N[Build note] --> AN[Add note] --> L{Alert?} -- yes --> SL[Alert on Slack]
 ```
@@ -26,7 +26,7 @@ flowchart LR
    | honeypot filled | 202 | `{"ok":true}` (the bot is not told) |
    | invalid fields | 400 | `{"ok":false,"errors":[...]}` |
    | wrong or missing secret | 401 | `{"ok":false,"error":"unauthorized"}` |
-   | secret not set in Settings | 500 | `{"ok":false,"error":"server not configured"}`, and the run fails |
+   | secret or business description not set in Settings | 500 | `{"ok":false,"error":"server not configured"}`, and the run fails |
 
 3. Find contact looks the email up in HubSpot. Prepare qualification sends the form to Claude with the
    prompt in [`src/prompt.md`](src/prompt.md) and a description of the business from Settings. Claude
@@ -78,7 +78,7 @@ Settings node:
 | `fields` | see export | Accepted form field names per lead field, matched case-insensitively. Add the names your form uses. |
 | `requiredFields` | `email`, `message` | |
 | `model` | `claude-haiku-5-5` | The request turns thinking off, which Haiku 5.5 accepts. For other models, check `thinking` and `max_tokens` in `src/prepare-qualification.js`. |
-| `businessDescription` | placeholder | What the business sells, to whom, typical project size, what it does not do. The score is only as good as this text. |
+| `businessDescription` | placeholder | What the business sells, to whom, typical project size, what it does not do. The score is only as good as this text. While it is the placeholder, every request gets a 500 and the run fails. |
 | `hotScore` | `70` | Minimum fit score for a Slack alert (intent buy only). |
 | `hubspot.scoreProperty`, `hubspot.intentProperty` | `ai_lead_score`, `ai_lead_intent` | Contact properties to write; `''` skips one. |
 | `hubspot.hotLifecycleStage` | `marketingqualifiedlead` | Stage for hot leads. Other buy and info leads become `lead`. |
@@ -155,7 +155,7 @@ retry and error settings on every HTTP node, spam never reaching HubSpot.
 
 `npm run check:n8n -- lead-intake` imports the workflow into n8n 2.43 (Docker) and runs the cases in
 [`test/n8n.cases.mjs`](test/n8n.cases.mjs): a hot lead from a new contact, an existing customer who is
-updated without losing their lifecycle stage, a filled honeypot, a wrong secret, the placeholder secret,
+updated without losing their lifecycle stage, a filled honeypot, a wrong secret, the placeholder settings,
 an invalid form, spam, a failed Claude call, and HubSpot rejecting the contact. HubSpot and Claude are
 answered by a local mock with responses shaped like their API documentation; the workflow has not been
 run against a live HubSpot account from this repository.

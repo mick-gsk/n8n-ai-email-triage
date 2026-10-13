@@ -14,6 +14,7 @@
  *
  * @typedef {object} Settings
  * @property {string} webhookSecret
+ * @property {string} businessDescription checked here so a placeholder never reaches Claude
  * @property {string} secretHeader
  * @property {string} [secretQueryParam] '' disables the query parameter
  * @property {string} honeypotField
@@ -104,15 +105,14 @@ const invalid = (errors) => outcome('invalid', 400, { ok: false, errors }, { err
  */
 function validate(req, settings) {
   const secret = String(settings.webhookSecret ?? '');
+  const business = String(settings.businessDescription ?? '').trim();
+  const config = [];
   if (secret.length < MIN_SECRET_CHARS || secret.startsWith('REPLACE'))
-    return outcome(
-      'misconfigured',
-      500,
-      { ok: false, error: 'server not configured' },
-      {
-        errors: [`webhookSecret in Settings must be set to a random string of at least ${MIN_SECRET_CHARS} characters`],
-      },
-    );
+    config.push(`webhookSecret in Settings must be set to a random string of at least ${MIN_SECRET_CHARS} characters`);
+  if (!business || business.startsWith('REPLACE'))
+    config.push('businessDescription in Settings must describe the business');
+  if (config.length)
+    return outcome('misconfigured', 500, { ok: false, error: 'server not configured' }, { errors: config });
   const header = req.headers?.[settings.secretHeader.toLowerCase()];
   const query = settings.secretQueryParam ? req.query?.[settings.secretQueryParam] : undefined;
   const given = typeof header === 'string' ? header : typeof query === 'string' ? query : '';

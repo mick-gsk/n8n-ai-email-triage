@@ -29,11 +29,12 @@ test('the webhook answers through Respond, right after validation', () => {
   assert.deepEqual(next('Respond'), ['Accepted?']);
   assert.deepEqual(next('Accepted?', 0), ['Find contact']);
   assert.deepEqual(next('Accepted?', 1), ['Not configured?']);
-  assert.deepEqual(next('Not configured?', 0), ['Report missing secret']);
+  assert.deepEqual(next('Not configured?', 0), ['Report missing settings']);
 });
 
-test('the exported secret is a placeholder the workflow refuses', () => {
+test('the exported secret and business description are placeholders the workflow refuses', () => {
   assert.match(settings.webhookSecret, /^REPLACE/);
+  assert.match(settings.businessDescription, /^REPLACE/);
   assert.equal(settings.secretQueryParam, '', 'secrets in URLs end up in logs, so this is opt-in');
   assert.ok(settings.fields.email.length && settings.fields.message.length);
   assert.ok(!settings.fields.email.includes(settings.honeypotField));

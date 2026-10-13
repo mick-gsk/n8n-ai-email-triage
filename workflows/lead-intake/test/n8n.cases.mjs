@@ -7,10 +7,12 @@ const workflow = JSON.parse(readFileSync(new URL('../workflow.json', import.meta
 const exported = JSON.parse(workflow.nodes.find((n) => n.name === 'Settings').parameters.jsonOutput);
 
 const secret = 'test-secret-5f0c9a7e21';
-// The exported secret is a placeholder the workflow refuses to run with, so cases use their own.
+// The exported secret and business description are placeholders the workflow refuses to run with,
+// so cases use their own.
 const settings = {
   ...exported,
   webhookSecret: secret,
+  businessDescription: 'Web design agency for small businesses. Websites and shops from 5,000 to 30,000 EUR.',
   hubspot: { ...exported.hubspot, contactUrl: 'https://app.hubspot.com/contacts/123/record/0-1/' },
 };
 
@@ -164,13 +166,14 @@ export const cases = [
     },
   },
   {
-    name: 'the exported placeholder secret is refused with 500 and fails the run',
+    name: 'the exported placeholder settings are refused with 500 and fail the run',
     input: request(hotForm, { 'x-lead-secret': exported.webhookSecret }),
     expectFailure: true,
     check(run, assert) {
       assert.equal(run.out('Respond')[0].sent.options.responseCode, 500);
       assert.equal(run.status, 'error');
       assert.match(run.error.message, /webhookSecret in Settings must be set/);
+      assert.match(run.error.message, /businessDescription in Settings must describe the business/);
       assert.equal(run.requests.length, 0);
     },
   },

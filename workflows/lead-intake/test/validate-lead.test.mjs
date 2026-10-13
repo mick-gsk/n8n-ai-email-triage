@@ -79,6 +79,21 @@ test('validate: the exported placeholder secret, or a short one, is refused', ()
   }
 });
 
+test('validate: the exported placeholder business description is refused', () => {
+  for (const businessDescription of [exported.businessDescription, '  ']) {
+    const out = validate(post(form), { ...settings, businessDescription });
+    assert.equal(out.status, 'misconfigured');
+    assert.equal(out.response.status, 500);
+    assert.deepEqual(out.errors, ['businessDescription in Settings must describe the business']);
+    assert.equal(out.lead, null);
+  }
+  const both = validate(post(form), exported);
+  assert.deepEqual(
+    both.errors.map((e) => e.split(' ')[0]),
+    ['webhookSecret', 'businessDescription'],
+  );
+});
+
 test('validate: a filled honeypot looks like success to the bot but goes no further', () => {
   const out = validate(post({ ...form, Fax: 'http://spam.example' }));
   assert.equal(out.status, 'bot');

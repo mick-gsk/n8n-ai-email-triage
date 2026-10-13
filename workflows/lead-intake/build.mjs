@@ -106,7 +106,7 @@ const nodes = [
   }),
 
   // The form already got a 500. This makes the run fail as well, so the error workflow reports it.
-  node('Report missing secret', 'n8n-nodes-base.stopAndError', 1, [1320, 460], {
+  node('Report missing settings', 'n8n-nodes-base.stopAndError', 1, [1320, 460], {
     parameters: { errorMessage: '={{ $json.errors.join("; ") }}' },
   }),
 
@@ -196,7 +196,7 @@ const connections = {
   'Validate lead': link('Respond'),
   Respond: link('Accepted?'),
   'Accepted?': link('Find contact', 'Not configured?'),
-  'Not configured?': link('Report missing secret', null),
+  'Not configured?': link('Report missing settings', null),
   'Find contact': link('Prepare qualification'),
   'Prepare qualification': link('Ask Claude'),
   'Ask Claude': link('Parse qualification'),
