@@ -147,13 +147,22 @@ test('parse: API errors, cut-off replies, refusals and garbage go to review', ()
   }
 });
 
-test('parse: a budget or timeline with numbers the visitor did not write is dropped', () => {
-  const out = parse(JSON.stringify({ ...valid, budget: '50,000 EUR', timeline: 'within 2 weeks' }));
-  assert.equal(out.qualification.budget, '');
-  assert.equal(out.qualification.timeline, '');
-  assert.equal(out.needs_review, false, 'the rest of the qualification is still usable');
-  const kept = parse(JSON.stringify({ ...valid, budget: '12.000 EUR', timeline: 'March' }));
-  assert.equal(kept.qualification.budget, '12.000 EUR');
+test('parse: a budget or timeline the visitor did not write is dropped', () => {
+  // The message says "Budget 12,000 EUR, live by March."
+  for (const [budget, timeline] of [
+    ['50,000 EUR', 'within 2 weeks'],
+    ['flexible', 'next month'],
+    ['3 EUR', 'March 12'],
+    ['12,000 EUR per shop', 'live in March'],
+    ['-', '?'],
+  ]) {
+    const out = parse(JSON.stringify({ ...valid, budget, timeline }));
+    assert.equal(out.qualification.budget, '', budget);
+    assert.equal(out.qualification.timeline, '', timeline);
+    assert.equal(out.needs_review, false, 'the rest of the qualification is still usable');
+  }
+  const kept = parse(JSON.stringify({ ...valid, budget: '12.000 eur', timeline: 'March' }));
+  assert.equal(kept.qualification.budget, '12.000 eur');
   assert.equal(kept.qualification.timeline, 'March');
 });
 

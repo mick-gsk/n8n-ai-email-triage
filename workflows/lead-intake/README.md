@@ -106,9 +106,9 @@ Set in the code (`src/`, `build.mjs`): message limit 5,000 characters, name and 
 - Form content is untrusted. Only configured fields are read, the phone number is not sent to Claude,
   and the form goes to Claude inside `<lead>` tags with any such tags removed from it. The parser does
   not rely on the prompt: score must be an integer from 0 to 100, intent one of six values, spam always
-  scores 0, and a budget or timeline containing numbers the visitor did not write is dropped. Form text
-  and the model's summary are HTML-escaped in the HubSpot note and Slack-escaped in the alert (no
-  `<!channel>` pings or disguised links).
+  scores 0, and a budget or timeline that is not a phrase from the form (ignoring case and punctuation)
+  is dropped. Form text and the model's summary are HTML-escaped in the HubSpot note and Slack-escaped
+  in the alert (no `<!channel>` pings or disguised links).
 - Failures are visible. A failed Claude call saves the lead for review and says so on Slack. HubSpot
   calls retry and then fail the run, so the error workflow reports it with a link to the execution,
   which holds the submitted form. A batch response without a contact also fails the run in Build note
