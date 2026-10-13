@@ -11,7 +11,7 @@
  * @typedef {object} HubSpotSettings
  * @property {string} scoreProperty contact property for fit_score, '' to skip
  * @property {string} intentProperty contact property for intent, '' to skip
- * @property {string} hotLifecycleStage stage for hot leads
+ * @property {string} hotLifecycleStage stage for hot leads, one of STAGES
  */
 
 // HubSpot's default lifecycle stages in order. A stage is only ever moved forward, so a lead
@@ -41,6 +41,11 @@ function nextStage(current, target) {
 }
 
 const { hubspot } = /** @type {{ hubspot: HubSpotSettings }} */ ($('Settings').first().json);
+// A custom stage has no known position, so existing contacts could never be moved to it.
+if (!STAGES.includes(hubspot.hotLifecycleStage))
+  throw new Error(
+    `hubspot.hotLifecycleStage in Settings must be one of ${STAGES.join(', ')}, not ${JSON.stringify(hubspot.hotLifecycleStage)}`,
+  );
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return $input.all().map((item, i) => {

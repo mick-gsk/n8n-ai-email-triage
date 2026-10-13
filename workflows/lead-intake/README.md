@@ -81,7 +81,7 @@ Settings node:
 | `businessDescription` | placeholder | What the business sells, to whom, typical project size, what it does not do. The score is only as good as this text. While it is the placeholder, every request gets a 500 and the run fails. |
 | `hotScore` | `70` | Minimum fit score for a Slack alert (intent buy only). |
 | `hubspot.scoreProperty`, `hubspot.intentProperty` | `ai_lead_score`, `ai_lead_intent` | Contact properties to write; `''` skips one. |
-| `hubspot.hotLifecycleStage` | `marketingqualifiedlead` | Stage for hot leads. Other buy and info leads become `lead`. |
+| `hubspot.hotLifecycleStage` | `marketingqualifiedlead` | Stage for hot leads, one of HubSpot's default stages (`subscriber` to `evangelist`); anything else fails the run in Build contact. Other buy and info leads become `lead`. |
 | `hubspot.contactUrl` | placeholder | `https://app.hubspot.com/contacts/<portal ID>/record/0-1/`; the contact ID is appended. EU accounts use `app-eu1.hubspot.com`. No link while it contains the placeholder. |
 | `slackChannel` | `#sales-leads` | |
 | `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so the tests use the same text. |
