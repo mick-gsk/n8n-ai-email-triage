@@ -1,0 +1,18 @@
+// The parts of the n8n Code node runtime that src/*.js use, for `npm run typecheck`.
+// Not part of the workflow export.
+
+interface N8nItem<T = unknown> {
+  json: T;
+  pairedItem?: { item: number };
+}
+
+interface N8nNodeOutput<T = unknown> {
+  all(): N8nItem<T>[];
+  first(): N8nItem<T>;
+}
+
+/** Items coming into this node. */
+declare const $input: N8nNodeOutput;
+
+/** Output of another node in the same execution, by node name. */
+declare function $(nodeName: string): N8nNodeOutput;
