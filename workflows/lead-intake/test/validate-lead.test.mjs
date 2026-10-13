@@ -103,7 +103,7 @@ test('validate: lists every problem in the 400 response', () => {
     'company must be text',
     'message is required',
     'email is not a valid address',
-    'phone may only contain digits, spaces and + ( ) . / -',
+    'phone must be digits, optionally with spaces and + ( ) . / -',
     'website is not a valid domain or URL',
   ]);
 });
@@ -122,6 +122,13 @@ test('validate: rejects malformed addresses', () => {
   }
   for (const email of ['a+tag@c.example', 'first.last@sub.c-d.example', 'A@C.EXAMPLE'])
     assert.equal(validate(post({ email, message: 'x' })).status, 'accepted', email);
+});
+
+test('validate: a phone number needs at least one digit', () => {
+  for (const phone of ['-----', '(  ) / .', '+++++'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', phone })).status, 'invalid', phone);
+  for (const phone of ['+49 (30) 123-45', '030/12345'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', phone })).status, 'accepted', phone);
 });
 
 test('validate: a body that is not an object gets 400', () => {

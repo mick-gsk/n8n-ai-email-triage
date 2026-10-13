@@ -47,7 +47,7 @@ const MAX_CHARS = {
 };
 const MIN_SECRET_CHARS = 16;
 const EMAIL = /^[^\s@<>()[\]\\,;:"]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
-const PHONE = /^[0-9+()./\s-]{5,40}$/;
+const PHONE = /^(?=.*\d)[0-9+()./\s-]{5,40}$/;
 const WEBSITE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,63}(:\d+)?(\/\S*)?$/i;
 
 /**
@@ -154,7 +154,7 @@ function validate(req, settings) {
     if (!raw[field] && !errors.includes(`${field} must be text`)) errors.push(`${field} is required`);
   const email = raw.email.toLowerCase();
   if (email && (!EMAIL.test(email) || /^\.|\.\.|\.@/.test(email))) errors.push('email is not a valid address');
-  if (raw.phone && !PHONE.test(raw.phone)) errors.push('phone may only contain digits, spaces and + ( ) . / -');
+  if (raw.phone && !PHONE.test(raw.phone)) errors.push('phone must be digits, optionally with spaces and + ( ) . / -');
   if (raw.website && !WEBSITE.test(raw.website)) errors.push('website is not a valid domain or URL');
   if (errors.length) return invalid(errors);
 
