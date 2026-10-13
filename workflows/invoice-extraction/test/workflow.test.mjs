@@ -95,7 +95,7 @@ test('the Invoices columns are exactly what Prepare rows produces', () => {
   assert.deepEqual(Object.keys(columns.value), Object.keys(row));
   assert.deepEqual(
     columns.schema.filter((c) => c.type === 'number').map((c) => c.id),
-    ['net_amount', 'vat_amount', 'gross_amount'],
+    ['payment_terms_days', 'net_amount', 'vat_amount', 'gross_amount'],
   );
 });
 

@@ -18,6 +18,7 @@ return $input.all().map((upload, i) => {
       invoice_number: r.invoice_number,
       invoice_date: r.invoice_date,
       due_date: r.due_date,
+      payment_terms_days: r.payment_terms_days,
       currency: r.currency,
       net_amount: r.net_amount,
       vat_amount: r.vat_amount,

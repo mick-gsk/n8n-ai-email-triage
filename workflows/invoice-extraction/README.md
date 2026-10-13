@@ -48,7 +48,7 @@ What Validate checks:
 | Amounts | Parsed in the document's number format (`1.234,56` or `1,234.56`, also `1'234.56`, `1 234,56`, trailing minus, brackets). An amount that does not fit the format, or is too large to be a number, is an error, not a guess. |
 | Totals | net + VAT = gross within 0.02 (compared in whole cents); each VAT line needs a readable rate, and its VAT = net × rate; VAT lines add up to the totals. Invoices and credit notes need all three totals, receipts only gross. |
 | Credit notes | Stored with negative amounts, however the document prints them. Mixed signs go to review; so does a negative total on an invoice. |
-| Dates | `2.10.2026`, `02.10.26`, `2026-10-02`, `2. Oktober 2026`, `Oct 2, 2026` and similar to ISO. Slash dates follow `dateOrder` unless one part is above 12. Payment terms in days become a due date. Due date before invoice date, or an invoice date in the future, goes to review. |
+| Dates | `2.10.2026`, `02.10.26`, `2026-10-02`, `2. Oktober 2026`, `Oct 2, 2026` and similar to ISO. Slash dates follow `dateOrder` unless one part is above 12. Payment terms in days (0 to 365) are stored and, if no due date is printed, become one. Due date before invoice date, or an invoice date in the future, goes to review. |
 | IBAN | Length per country from the SWIFT IBAN registry (an unknown country code is invalid) and mod-97 checksum. |
 | VAT ID | Format for the EU countries plus CH, GB, NO and Northern Ireland; check digit for German IDs. IDs from other countries are not checked. |
 | Required fields | Supplier name, invoice number (not for receipts), invoice date, currency as a current ISO 4217 code. `€`, `£`, `US$`, `SFr` and `Fr.` are converted; symbols shared by several currencies (`$`, `kr`, `¥`) are not and go to review. |
@@ -62,8 +62,8 @@ What Validate checks:
    you use a different label or search, change the query in the Gmail Trigger node.
 3. Create a Google Sheet with two tabs and these header rows:
    - `Invoices`: `processed_at, document_type, supplier_name, supplier_vat_id, invoice_number,
-     invoice_date, due_date, currency, net_amount, vat_amount, gross_amount, vat_rates, iban,
-     line_items, file_name, file_link, email_from, email_subject, message_id`
+     invoice_date, due_date, payment_terms_days, currency, net_amount, vat_amount, gross_amount,
+     vat_rates, iban, line_items, file_name, file_link, email_from, email_subject, message_id`
    - `Review`: `processed_at, status, reason, document_type, supplier_name, invoice_number,
      invoice_date, currency, gross_amount, file_name, email_from, email_subject, gmail_link, message_id`
 4. Create a Drive folder for the files. The month folders are created inside it.

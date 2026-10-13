@@ -37,6 +37,8 @@ describe('Validate', () => {
     assert.equal(inv.supplier_vat_id, 'DE123456788');
     assert.equal(inv.invoice_date, '2026-10-02');
     assert.equal(inv.due_date, '2026-10-16', 'from the payment terms in days');
+    assert.equal(inv.payment_terms_days, 14);
+    assert.equal(inv.number_format, '1.234,56');
     assert.equal(inv.currency, 'EUR');
     assert.deepEqual([inv.net_amount, inv.vat_amount, inv.gross_amount], [1250, 237.5, 1487.5]);
     assert.deepEqual(inv.vat_lines, [{ rate: 19, net: 1250, vat: 237.5 }]);
@@ -234,6 +236,19 @@ describe('Validate', () => {
         const inv = german({ invoice_date: printed });
         assert.equal(inv.status, 'review', printed);
         assert.match(inv.reasons.join(), /invoice date: .* is not a date/);
+      }
+    });
+
+    test('payment terms are kept as a whole number of days or go to review', () => {
+      assert.equal(german({ payment_terms_days: '' }).payment_terms_days, null);
+      const immediate = german({ payment_terms_days: '0' });
+      assert.deepEqual([immediate.payment_terms_days, immediate.due_date], [0, '2026-10-02']);
+      const printed = german({ payment_terms_days: '30', due_date: '20.10.2026' });
+      assert.deepEqual([printed.payment_terms_days, printed.due_date], [30, '2026-10-20'], 'a printed date wins');
+      for (const terms of ['14 Tage', '-5', '1.5', '400']) {
+        const inv = german({ payment_terms_days: terms });
+        assert.equal(inv.payment_terms_days, null, terms);
+        assert.deepEqual(inv.reasons, [`payment terms "${terms}" are not a number of days`], terms);
       }
     });
 

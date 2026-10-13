@@ -106,7 +106,9 @@ const VAT_ID_FORMATS = {
  * @property {string} supplier_vat_id normalised, e.g. DE123456789
  * @property {string} invoice_number
  * @property {string} invoice_date YYYY-MM-DD or ''
- * @property {string} due_date YYYY-MM-DD or ''
+ * @property {string} due_date YYYY-MM-DD or ''; from payment_terms_days if no date is printed
+ * @property {number | null} payment_terms_days days from the invoice date, 0 to 365
+ * @property {string} number_format "1.234,56", "1,234.56" or '': how the amounts were read
  * @property {string} currency ISO 4217 or ''
  * @property {number | null} net_amount
  * @property {number | null} vat_amount
@@ -283,7 +285,8 @@ function validate(raw, settings, now) {
   const reasons = [];
   const type = TYPES.includes(raw.document_type) ? raw.document_type : '';
   if (!type) reasons.push(`unknown document type "${text(raw.document_type, 40)}"`);
-  const decimal = raw.number_format === '1,234.56' ? '.' : raw.number_format === '1.234,56' ? ',' : '';
+  const numberFormat = ['1.234,56', '1,234.56'].includes(raw.number_format) ? raw.number_format : '';
+  const decimal = numberFormat === '1,234.56' ? '.' : numberFormat === '1.234,56' ? ',' : '';
   if (!decimal && type !== 'not_invoice') reasons.push('number format missing');
 
   /**
@@ -326,7 +329,9 @@ function validate(raw, settings, now) {
     invoice_number: text(raw.invoice_number, 60),
     invoice_date: date('invoice date', raw.invoice_date),
     due_date: date('due date', raw.due_date),
+    payment_terms_days: null,
     currency: currencyCode(raw.currency),
+    number_format: numberFormat,
     net_amount: amount('net amount', raw.net_amount),
     vat_amount: amount('VAT amount', raw.vat_amount),
     gross_amount: amount('gross amount', raw.gross_amount),
@@ -357,8 +362,11 @@ function validate(raw, settings, now) {
   if (inv.invoice_date && inv.invoice_date > new Date(now.getTime() + 86400000).toISOString().slice(0, 10))
     reasons.push(`invoice date ${inv.invoice_date} is in the future`);
 
-  const days = Number(text(raw.payment_terms_days, 5));
-  if (!inv.due_date && inv.invoice_date && Number.isInteger(days) && days > 0 && days <= 365) {
+  const terms = text(raw.payment_terms_days, 10);
+  if (/^\d{1,3}$/.test(terms) && Number(terms) <= 365) inv.payment_terms_days = Number(terms);
+  else if (terms) reasons.push(`payment terms "${terms}" are not a number of days`);
+  const days = inv.payment_terms_days;
+  if (!inv.due_date && inv.invoice_date && days !== null) {
     const due = new Date(`${inv.invoice_date}T00:00:00Z`);
     due.setUTCDate(due.getUTCDate() + days);
     inv.due_date = due.toISOString().slice(0, 10);

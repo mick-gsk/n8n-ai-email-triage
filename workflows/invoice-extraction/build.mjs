@@ -35,6 +35,7 @@ const invoiceColumns = [
   'invoice_number',
   'invoice_date',
   'due_date',
+  'payment_terms_days',
   'currency',
   'net_amount',
   'vat_amount',
@@ -64,7 +65,7 @@ const reviewColumns = [
   'gmail_link',
   'message_id',
 ];
-const numeric = new Set(['net_amount', 'vat_amount', 'gross_amount']);
+const numeric = new Set(['payment_terms_days', 'net_amount', 'vat_amount', 'gross_amount']);
 
 // One If condition, in the format of If node version 2.3.
 const condition = (id, leftValue, operator, rightValue = '') => ({
