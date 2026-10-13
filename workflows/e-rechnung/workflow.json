@@ -1,0 +1,1084 @@
+{
+  "name": "E-Rechnung (XRechnung and ZUGFeRD from Gmail to Sheets)",
+  "nodes": [
+    {
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "maxResults": 10,
+        "filters": {
+          "q": "label:e-rechnung has:attachment",
+          "readStatus": "both"
+        },
+        "options": {
+          "downloadAttachments": true,
+          "dataPropertyAttachmentsPrefixName": "attachment_"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "settings",
+      "name": "Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"maxFileMB\": 10,\n  \"processedLabelId\": \"Label_ERECHNUNG_DONE\",\n  \"reviewLabelId\": \"Label_ERECHNUNG_REVIEW\",\n  \"sheetId\": \"YOUR_GOOGLE_SHEET_ID\",\n  \"driveFolderId\": \"YOUR_DRIVE_FOLDER_ID\",\n  \"slackChannel\": \"#bookkeeping\"\n}",
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "split-attachments",
+      "name": "Split attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Split attachments\" (mode: run once for all items).\n// Turns each email from the trigger into one item per XML or PDF attachment, with the file as\n// binary property \"file\". Other files (images, Word, ZIP) are ignored. A file over the size limit,\n// or an email without any XML or PDF, becomes an item with status \"review\" that skips reading and\n// goes straight to the review channel.\nconst XML_TYPES = ['application/xml', 'text/xml'];\n// Types that say nothing about the content; only for these the file extension decides.\nconst GENERIC_TYPES = ['', 'application/octet-stream', 'binary/octet-stream'];\nconst MAX_TEXT = 300;\n\n/**\n * @typedef {object} Binary n8n binary data (metadata; in filesystem mode `data` is only a reference).\n * @property {string} [data]\n * @property {string} [id]\n * @property {string} [mimeType]\n * @property {string} [fileName]\n * @property {number} [bytes]\n *\n * @typedef {object} GmailMessage Gmail Trigger output with \"Simplify\" off (fields used here).\n * @property {string} id\n * @property {string} threadId\n * @property {string[]} [labelIds]\n * @property {{ value?: { address?: string }[], text?: string }} [from]\n * @property {string} [subject]\n * @property {string} [date]\n *\n * @typedef {{ maxFileMB: number, processedLabelId: string, reviewLabelId: string }} Settings\n */\n\n/**\n * 'application/xml', 'application/pdf' or undefined for files that are not read.\n * @param {Binary} file\n */\nfunction mediaType(file) {\n  const mime = String(file.mimeType ?? '')\n    .split(';')[0]\n    .trim()\n    .toLowerCase();\n  if (mime === 'application/pdf') return mime;\n  // XRechnung files also arrive as application/x-xrechnung+xml and similar.\n  if (XML_TYPES.includes(mime) || /\\+xml$/.test(mime)) return 'application/xml';\n  if (!GENERIC_TYPES.includes(mime)) return undefined;\n  const ext = String(file.fileName ?? '')\n    .toLowerCase()\n    .split('.')\n    .pop();\n  return ext === 'pdf' ? 'application/pdf' : ext === 'xml' ? 'application/xml' : undefined;\n}\n\n/** @param {Binary} file */\nfunction size(file) {\n  if (typeof file.bytes === 'number') return file.bytes;\n  // Binary kept in memory (no id) has the base64 string itself in `data`.\n  return !file.id && file.data ? Math.floor((file.data.length * 3) / 4) : 0;\n}\n\nconst settings = /** @type {Settings} */ ($('Settings').first().json);\nconst done = new Set([settings.processedLabelId, settings.reviewLabelId]);\n/** @type {{ json: Record<string, unknown>, binary?: Record<string, Binary> }[]} */\nconst out = [];\n\nfor (const item of $('Gmail Trigger').all()) {\n  const m = /** @type {GmailMessage} */ (item.json);\n  // A manual \"Execute workflow\" run fetches recent mail again; mail this workflow has already\n  // labelled is skipped so it does not produce a second row or review message.\n  if ((m.labelIds ?? []).some((id) => done.has(id))) continue;\n\n  const email = {\n    message_id: m.id,\n    thread_id: m.threadId,\n    email_from: String(m.from?.value?.[0]?.address ?? m.from?.text ?? '').slice(0, MAX_TEXT),\n    email_subject: String(m.subject ?? '').slice(0, MAX_TEXT),\n    received_at: m.date ?? '',\n    gmail_link: /^[0-9a-f]+$/i.test(m.id) ? `https://mail.google.com/mail/u/0/#all/${m.id}` : '',\n    processed_at: new Date().toISOString(),\n  };\n  const files = Object.values(/** @type {Record<string, Binary>} */ (item.binary ?? {}));\n  let used = 0;\n  for (const file of files) {\n    const type = mediaType(file);\n    if (!type) continue;\n    used++;\n    const fileName = String(file.fileName ?? 'attachment').slice(0, 200);\n    const bytes = size(file);\n    if (bytes > settings.maxFileMB * 1024 * 1024) {\n      out.push({\n        json: {\n          ...email,\n          file_name: fileName,\n          status: 'review',\n          reasons: [`file too large (${(bytes / 1024 / 1024).toFixed(1)} MB, limit ${settings.maxFileMB} MB)`],\n        },\n      });\n      continue;\n    }\n    out.push({\n      json: { ...email, file_name: fileName, media_type: type, status: 'pending', reasons: [] },\n      binary: { file },\n    });\n  }\n  if (!used) {\n    const names = files.map((f) => f.fileName ?? '?').join(', ');\n    out.push({\n      json: {\n        ...email,\n        file_name: names.slice(0, 200),\n        status: 'review',\n        reasons: [names ? `no XML or PDF attachment (found: ${names})` : 'no attachment'],\n      },\n    });\n  }\n}\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn out;\n"
+      }
+    },
+    {
+      "id": "xml-or-pdf-",
+      "name": "XML or PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "readable",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "pending",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "read-file",
+      "name": "Read file",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "operation": "binaryToPropery",
+        "binaryPropertyName": "file",
+        "destinationKey": "fileBase64",
+        "options": {
+          "keepSource": "both"
+        }
+      }
+    },
+    {
+      "id": "read-e-invoice",
+      "name": "Read e-invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Read e-invoice\" (mode: run once for all items).\n// Reads the invoice data from each file: an XRechnung (or other EN 16931) XML file in UBL or CII\n// syntax, or a ZUGFeRD / Factur-X PDF, which carries its CII XML as an embedded file. Every value\n// comes from an XML element; nothing is guessed, and there is no OCR. Values stay text here; the\n// Validate node checks and converts them.\n// The Code node has no XML parser, and zlib is only available if NODE_FUNCTION_ALLOW_BUILTIN\n// allows it, so a small XML reader and an inflater for compressed PDF streams are part of this node.\n// An email often carries the same invoice twice (XML plus a PDF copy, or a ZUGFeRD PDF plus its\n// XML). Once one file of an email has been read, PDFs of that email without embedded XML and\n// further copies of the same invoice are dropped.\n\n// Inflated XML larger than this is not read (protects the run against compression bombs).\nconst MAX_XML_BYTES = 20 * 1024 * 1024;\nconst MAX_TEXT = 200;\nconst MAX_LINES = 500;\n\n/**\n * @typedef {{ name: string, attrs: Record<string, string>, children: El[], text: string }} El\n *   An XML element: local name (namespace prefix removed), attributes by local name, child\n *   elements and its own text.\n *\n * @typedef {object} EInvoice Text values as found in the XML, by EN 16931 business term (BT).\n * @property {'UBL' | 'CII'} syntax\n * @property {string} customization_id BT-24, the specification (XRechnung, ZUGFeRD profile, ...)\n * @property {string} type_code BT-3: 380 invoice, 381 credit note, ...\n * @property {string} invoice_number BT-1\n * @property {string} issue_date BT-2, YYYY-MM-DD if the XML had a valid date format\n * @property {string} due_date BT-9\n * @property {string} currency BT-5\n * @property {string} buyer_reference BT-10, the Leitweg-ID for public buyers\n * @property {string} seller_name BT-27\n * @property {string} seller_vat_id BT-31\n * @property {string} seller_tax_number BT-32 (Steuernummer)\n * @property {string} seller_street BT-35, BT-36\n * @property {string} seller_postcode BT-38\n * @property {string} seller_city BT-37\n * @property {string} seller_country BT-40\n * @property {string} buyer_name BT-44\n * @property {string} payment_means_code BT-81 of the first payment means (58 = SEPA transfer)\n * @property {string} iban BT-84 of the first payment means that has an account\n * @property {string} payment_terms BT-20\n * @property {string} line_total BT-106\n * @property {string} allowance_total BT-107\n * @property {string} charge_total BT-108\n * @property {string} net_total BT-109\n * @property {string} vat_total BT-110\n * @property {string} gross_total BT-112\n * @property {string} prepaid BT-113\n * @property {string} rounding BT-114\n * @property {string} payable BT-115\n * @property {{ category: string, rate: string, basis: string, vat: string }[]} vat_breakdown BG-23\n * @property {{ id: string, name: string, quantity: string, unit: string, net: string }[]} lines BG-25\n * @property {number} line_count lines in the document (lines holds at most MAX_LINES)\n */\n\n/** @type {Record<string, string>} */\nconst ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '\"', apos: \"'\" };\n\n/** @param {string} s */\nconst unescape = (s) =>\n  s.replace(/&(#x[0-9a-fA-F]+|#\\d+|\\w+);/g, (_, e) => {\n    if (e[0] === '#') return String.fromCodePoint(e[1] === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1)));\n    if (e in ENTITIES) return ENTITIES[e];\n    throw new Error(`unknown entity &${e};`);\n  });\n\n/** @param {string} name */\nconst localName = (name) => name.slice(name.indexOf(':') + 1);\n\n/**\n * A non-validating XML reader for well-formed documents. Namespaces are dropped (UBL and CII use\n * different prefixes from sender to sender); a DOCTYPE is refused, since e-invoices have none and\n * entity declarations are a known attack on XML readers.\n * @param {string} xml\n * @returns {El} the root element\n */\nfunction parseXml(xml) {\n  /** @type {El} */\n  const doc = { name: '', attrs: {}, children: [], text: '' };\n  const stack = [doc];\n  const token =\n    /<!--[\\s\\S]*?-->|<\\?[\\s\\S]*?\\?>|<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|(<!DOCTYPE)|<\\/([^\\s>]+)\\s*>|<([^\\s/>!?]+)((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(\\/?)>|([^<]+)/y;\n  let pos = 0;\n  while (pos < xml.length) {\n    token.lastIndex = pos;\n    const m = token.exec(xml);\n    if (!m) throw new Error(`XML is not well-formed near character ${pos}`);\n    pos = token.lastIndex;\n    const [, cdata, doctype, close, open, attrs, selfClose, chars] = m;\n    const current = stack[stack.length - 1];\n    if (doctype) throw new Error('XML with a DOCTYPE is not read');\n    if (cdata !== undefined) current.text += cdata;\n    else if (chars !== undefined) {\n      if (current !== doc) current.text += unescape(chars);\n      else if (chars.trim()) throw new Error('text outside the root element');\n    } else if (close) {\n      if (stack.length < 2 || current.name !== localName(close))\n        throw new Error(`XML is not well-formed: unexpected </${close}>`);\n      stack.pop();\n    } else if (open) {\n      /** @type {El} */\n      const el = { name: localName(open), attrs: {}, children: [], text: '' };\n      for (const a of attrs.matchAll(/([^\\s=]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')/g))\n        el.attrs[localName(a[1])] = unescape(a[2] ?? a[3]);\n      if (current === doc && doc.children.length) throw new Error('XML has more than one root element');\n      current.children.push(el);\n      if (!selfClose) stack.push(el);\n    }\n  }\n  if (stack.length !== 1 || doc.children.length !== 1) throw new Error('XML is incomplete');\n  return doc.children[0];\n}\n\n/**\n * All elements at a path of local names below el, in document order: \"PaymentMeans/PaymentMeansCode\".\n * @param {El | undefined} el\n * @param {string} path\n */\nfunction findAll(el, path) {\n  let level = el ? [el] : [];\n  for (const step of path.split('/')) level = level.flatMap((e) => e.children.filter((c) => c.name === step));\n  return level;\n}\n\n/** @param {El | undefined} el @param {string} path */\nconst find = (el, path) => findAll(el, path)[0];\n\n/** Text of the first element at path (whitespace collapsed), or ''. @param {El | undefined} el @param {string} path */\nconst val = (el, path) => (find(el, path)?.text ?? '').replace(/\\s+/g, ' ').trim().slice(0, MAX_TEXT);\n\n/** @param {string[]} parts */\nconst join = (parts) => parts.filter(Boolean).join(', ');\n\n/**\n * CII date (udt:DateTimeString, format 102 = YYYYMMDD) as YYYY-MM-DD; other formats as found.\n * @param {El | undefined} el\n */\nfunction ciiDate(el) {\n  const s = (el?.text ?? '').trim();\n  const m = /^(\\d{4})(\\d{2})(\\d{2})$/.exec(s);\n  return m && (el?.attrs.format ?? '102') === '102' ? `${m[1]}-${m[2]}-${m[3]}` : s;\n}\n\n/** @param {El} root Invoice or CreditNote @returns {EInvoice} */\nfunction fromUbl(root) {\n  const credit = root.name === 'CreditNote';\n  const seller = find(root, 'AccountingSupplierParty/Party');\n  const address = find(seller, 'PostalAddress');\n  const buyer = find(root, 'AccountingCustomerParty/Party');\n  const currency = val(root, 'DocumentCurrencyCode');\n  // A second TaxTotal, without breakdown, holds the VAT in the tax currency (BT-111).\n  const taxTotals = findAll(root, 'TaxTotal');\n  const taxTotal = taxTotals.find((t) => find(t, 'TaxAmount')?.attrs.currencyID === currency) ?? taxTotals[0];\n  const sums = find(root, 'LegalMonetaryTotal');\n  const means = findAll(root, 'PaymentMeans');\n  const taxSchemes = findAll(seller, 'PartyTaxScheme');\n  /** @param {boolean} vat */\n  const taxId = (vat) =>\n    taxSchemes\n      .filter((p) => (val(p, 'TaxScheme/ID').toUpperCase() === 'VAT') === vat)\n      .map((p) => val(p, 'CompanyID'))[0] ?? '';\n  const lines = findAll(root, credit ? 'CreditNoteLine' : 'InvoiceLine');\n  const quantity = credit ? 'CreditedQuantity' : 'InvoicedQuantity';\n  return {\n    syntax: 'UBL',\n    customization_id: val(root, 'CustomizationID'),\n    type_code: val(root, credit ? 'CreditNoteTypeCode' : 'InvoiceTypeCode'),\n    invoice_number: val(root, 'ID'),\n    issue_date: val(root, 'IssueDate'),\n    due_date: val(root, 'DueDate') || means.map((m) => val(m, 'PaymentDueDate')).find(Boolean) || '',\n    currency,\n    buyer_reference: val(root, 'BuyerReference'),\n    seller_name: val(seller, 'PartyLegalEntity/RegistrationName') || val(seller, 'PartyName/Name'),\n    seller_vat_id: taxId(true),\n    seller_tax_number: taxId(false),\n    seller_street: join([val(address, 'StreetName'), val(address, 'AdditionalStreetName')]),\n    seller_postcode: val(address, 'PostalZone'),\n    seller_city: val(address, 'CityName'),\n    seller_country: val(address, 'Country/IdentificationCode'),\n    buyer_name: val(buyer, 'PartyLegalEntity/RegistrationName') || val(buyer, 'PartyName/Name'),\n    payment_means_code: val(means[0], 'PaymentMeansCode'),\n    iban: means.map((m) => val(m, 'PayeeFinancialAccount/ID')).find(Boolean) ?? '',\n    payment_terms: findAll(root, 'PaymentTerms')\n      .map((t) => val(t, 'Note'))\n      .filter(Boolean)\n      .join(' '),\n    line_total: val(sums, 'LineExtensionAmount'),\n    allowance_total: val(sums, 'AllowanceTotalAmount'),\n    charge_total: val(sums, 'ChargeTotalAmount'),\n    net_total: val(sums, 'TaxExclusiveAmount'),\n    vat_total: val(taxTotal, 'TaxAmount'),\n    gross_total: val(sums, 'TaxInclusiveAmount'),\n    prepaid: val(sums, 'PrepaidAmount'),\n    rounding: val(sums, 'PayableRoundingAmount'),\n    payable: val(sums, 'PayableAmount'),\n    vat_breakdown: findAll(taxTotal, 'TaxSubtotal').map((s) => ({\n      category: val(s, 'TaxCategory/ID'),\n      rate: val(s, 'TaxCategory/Percent'),\n      basis: val(s, 'TaxableAmount'),\n      vat: val(s, 'TaxAmount'),\n    })),\n    lines: lines.slice(0, MAX_LINES).map((l) => ({\n      id: val(l, 'ID'),\n      name: val(l, 'Item/Name'),\n      quantity: val(l, quantity),\n      unit: find(l, quantity)?.attrs.unitCode ?? '',\n      net: val(l, 'LineExtensionAmount'),\n    })),\n    line_count: lines.length,\n  };\n}\n\n/** @param {El} root CrossIndustryInvoice @returns {EInvoice} */\nfunction fromCii(root) {\n  const doc = find(root, 'ExchangedDocument');\n  const tx = find(root, 'SupplyChainTradeTransaction');\n  const agreement = find(tx, 'ApplicableHeaderTradeAgreement');\n  const seller = find(agreement, 'SellerTradeParty');\n  const address = find(seller, 'PostalTradeAddress');\n  const settlement = find(tx, 'ApplicableHeaderTradeSettlement');\n  const currency = val(settlement, 'InvoiceCurrencyCode');\n  const sums = find(settlement, 'SpecifiedTradeSettlementHeaderMonetarySummation');\n  // TaxTotalAmount appears twice when a tax currency is used; the one in the invoice currency counts.\n  const taxTotals = findAll(sums, 'TaxTotalAmount');\n  const taxTotal = taxTotals.find((t) => t.attrs.currencyID === currency) ?? taxTotals[0];\n  const means = findAll(settlement, 'SpecifiedTradeSettlementPaymentMeans');\n  const terms = findAll(settlement, 'SpecifiedTradePaymentTerms');\n  /** @param {string} scheme VA = VAT ID, FC = tax number */\n  const taxId = (scheme) =>\n    (findAll(seller, 'SpecifiedTaxRegistration/ID').find((r) => r.attrs.schemeID === scheme)?.text ?? '').trim();\n  const lines = findAll(tx, 'IncludedSupplyChainTradeLineItem');\n  return {\n    syntax: 'CII',\n    customization_id: val(root, 'ExchangedDocumentContext/GuidelineSpecifiedDocumentContextParameter/ID'),\n    type_code: val(doc, 'TypeCode'),\n    invoice_number: val(doc, 'ID'),\n    issue_date: ciiDate(find(doc, 'IssueDateTime/DateTimeString')),\n    due_date: terms.map((t) => ciiDate(find(t, 'DueDateDateTime/DateTimeString'))).find(Boolean) ?? '',\n    currency,\n    buyer_reference: val(agreement, 'BuyerReference'),\n    seller_name: val(seller, 'Name'),\n    seller_vat_id: taxId('VA'),\n    seller_tax_number: taxId('FC'),\n    seller_street: join([val(address, 'LineOne'), val(address, 'LineTwo'), val(address, 'LineThree')]),\n    seller_postcode: val(address, 'PostcodeCode'),\n    seller_city: val(address, 'CityName'),\n    seller_country: val(address, 'CountryID'),\n    buyer_name: val(agreement, 'BuyerTradeParty/Name'),\n    payment_means_code: val(means[0], 'TypeCode'),\n    iban:\n      means\n        .map(\n          (m) =>\n            val(m, 'PayeePartyCreditorFinancialAccount/IBANID') ||\n            val(m, 'PayeePartyCreditorFinancialAccount/ProprietaryID'),\n        )\n        .find(Boolean) ?? '',\n    payment_terms: terms\n      .map((t) => val(t, 'Description'))\n      .filter(Boolean)\n      .join(' '),\n    line_total: val(sums, 'LineTotalAmount'),\n    allowance_total: val(sums, 'AllowanceTotalAmount'),\n    charge_total: val(sums, 'ChargeTotalAmount'),\n    net_total: val(sums, 'TaxBasisTotalAmount'),\n    vat_total: (taxTotal?.text ?? '').trim(),\n    gross_total: val(sums, 'GrandTotalAmount'),\n    prepaid: val(sums, 'TotalPrepaidAmount'),\n    rounding: val(sums, 'RoundingAmount'),\n    payable: val(sums, 'DuePayableAmount'),\n    vat_breakdown: findAll(settlement, 'ApplicableTradeTax').map((t) => ({\n      category: val(t, 'CategoryCode'),\n      rate: val(t, 'RateApplicablePercent'),\n      basis: val(t, 'BasisAmount'),\n      vat: val(t, 'CalculatedAmount'),\n    })),\n    lines: lines.slice(0, MAX_LINES).map((l) => ({\n      id: val(l, 'AssociatedDocumentLineDocument/LineID'),\n      name: val(l, 'SpecifiedTradeProduct/Name'),\n      quantity: val(l, 'SpecifiedLineTradeDelivery/BilledQuantity'),\n      unit: find(l, 'SpecifiedLineTradeDelivery/BilledQuantity')?.attrs.unitCode ?? '',\n      net: val(l, 'SpecifiedLineTradeSettlement/SpecifiedTradeSettlementLineMonetarySummation/LineTotalAmount'),\n    })),\n    line_count: lines.length,\n  };\n}\n\n/**\n * Bytes to text, in the encoding the XML declares (UTF-8 if none). Invalid bytes are an error.\n * @param {Uint8Array} bytes\n */\nfunction decodeText(bytes) {\n  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be', { fatal: true }).decode(bytes);\n  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le', { fatal: true }).decode(bytes);\n  const head = String.fromCharCode(...bytes.subarray(0, 200));\n  const encoding =\n    /^(?:\\uFEFF|\\u00EF\\u00BB\\u00BF)?<\\?xml[^>]*encoding\\s*=\\s*[\"']([\\w.:-]+)[\"']/.exec(head)?.[1] ?? 'utf-8';\n  let decoder;\n  try {\n    decoder = new TextDecoder(encoding.toLowerCase(), { fatal: true });\n  } catch {\n    throw new Error(`XML encoding \"${encoding}\" is not supported`);\n  }\n  try {\n    return decoder.decode(bytes).replace(/^\\uFEFF/, '');\n  } catch {\n    throw new Error(`XML is not valid ${encoding}`);\n  }\n}\n\n// --- Inflate (RFC 1950 zlib / RFC 1951 deflate), for FlateDecode streams in PDFs ---------------\n\n// Base values and extra bits of the deflate length (257..285) and distance (0..29) codes.\nconst LENGTH_BASE = [\n  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,\n];\nconst LENGTH_EXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];\nconst DIST_BASE = [\n  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,\n  8193, 12289, 16385, 24577,\n];\nconst DIST_EXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];\n// Order in which the code length code lengths are stored.\nconst CL_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];\n\n/**\n * Canonical Huffman code from code lengths: count per length and symbols ordered by code.\n * @param {ArrayLike<number>} lengths\n */\nfunction huffman(lengths) {\n  const counts = new Uint16Array(16);\n  for (let i = 0; i < lengths.length; i++) counts[lengths[i]]++;\n  counts[0] = 0;\n  const offsets = new Uint16Array(16);\n  for (let len = 1; len < 16; len++) offsets[len] = offsets[len - 1] + counts[len - 1];\n  const symbols = new Uint16Array(lengths.length);\n  for (let i = 0; i < lengths.length; i++) if (lengths[i]) symbols[offsets[lengths[i]]++] = i;\n  return { counts, symbols };\n}\n\n/**\n * @param {Uint8Array} data zlib stream (2-byte header, deflate data; the Adler-32 trailer is not checked)\n * @param {number} maxBytes\n * @returns {Uint8Array}\n */\nfunction inflate(data, maxBytes) {\n  if (data.length < 2 || (data[0] & 0x0f) !== 8 || ((data[0] << 8) | data[1]) % 31 !== 0)\n    throw new Error('stream is not zlib data');\n  let pos = 2;\n  let bitBuf = 0;\n  let bitCount = 0;\n  let out = new Uint8Array(Math.min(maxBytes, Math.max(4096, data.length * 4)));\n  let size = 0;\n\n  /** @param {number} n */\n  const bits = (n) => {\n    while (bitCount < n) {\n      if (pos >= data.length) throw new Error('compressed stream ends early');\n      bitBuf |= data[pos++] << bitCount;\n      bitCount += 8;\n    }\n    const v = bitBuf & ((1 << n) - 1);\n    bitBuf >>>= n;\n    bitCount -= n;\n    return v;\n  };\n  /** @param {number} n */\n  const room = (n) => {\n    if (size + n <= out.length) return;\n    if (size + n > maxBytes) throw new Error(`embedded file is larger than ${maxBytes / 1024 / 1024} MB`);\n    const bigger = new Uint8Array(Math.min(maxBytes, Math.max(out.length * 2, size + n)));\n    bigger.set(out.subarray(0, size));\n    out = bigger;\n  };\n  /** @param {{ counts: Uint16Array, symbols: Uint16Array }} h */\n  const decode = (h) => {\n    let code = 0;\n    let first = 0;\n    let index = 0;\n    for (let len = 1; len < 16; len++) {\n      code |= bits(1);\n      const count = h.counts[len];\n      if (code - first < count) return h.symbols[index + code - first];\n      index += count;\n      first = (first + count) << 1;\n      code <<= 1;\n    }\n    throw new Error('invalid compressed data');\n  };\n\n  let final = 0;\n  while (!final) {\n    final = bits(1);\n    const type = bits(2);\n    if (type === 0) {\n      bitBuf = 0;\n      bitCount = 0;\n      if (pos + 4 > data.length) throw new Error('compressed stream ends early');\n      const len = data[pos] | (data[pos + 1] << 8);\n      pos += 4;\n      if (pos + len > data.length) throw new Error('compressed stream ends early');\n      room(len);\n      out.set(data.subarray(pos, pos + len), size);\n      size += len;\n      pos += len;\n      continue;\n    }\n    let lit, dist;\n    if (type === 1) {\n      const lengths = new Uint8Array(288);\n      lengths.fill(8, 0, 144).fill(9, 144, 256).fill(7, 256, 280).fill(8, 280, 288);\n      lit = huffman(lengths);\n      dist = huffman(new Uint8Array(30).fill(5));\n    } else if (type === 2) {\n      const nLit = bits(5) + 257;\n      const nDist = bits(5) + 1;\n      const nCode = bits(4) + 4;\n      const clLengths = new Uint8Array(19);\n      for (let i = 0; i < nCode; i++) clLengths[CL_ORDER[i]] = bits(3);\n      const cl = huffman(clLengths);\n      const lengths = new Uint8Array(nLit + nDist);\n      for (let i = 0; i < nLit + nDist;) {\n        const sym = decode(cl);\n        if (sym < 16) lengths[i++] = sym;\n        else {\n          const [repeat, value] =\n            sym === 16 ? [3 + bits(2), i ? lengths[i - 1] : -1] : sym === 17 ? [3 + bits(3), 0] : [11 + bits(7), 0];\n          if (value < 0 || i + repeat > lengths.length) throw new Error('invalid compressed data');\n          lengths.fill(value, i, i + repeat);\n          i += repeat;\n        }\n      }\n      lit = huffman(lengths.subarray(0, nLit));\n      dist = huffman(lengths.subarray(nLit));\n    } else throw new Error('invalid compressed data');\n\n    for (;;) {\n      const sym = decode(lit);\n      if (sym < 256) {\n        room(1);\n        out[size++] = sym;\n      } else if (sym === 256) break;\n      else {\n        const l = sym - 257;\n        if (l >= 29) throw new Error('invalid compressed data');\n        const len = LENGTH_BASE[l] + bits(LENGTH_EXTRA[l]);\n        const d = decode(dist);\n        if (d >= 30) throw new Error('invalid compressed data');\n        const back = DIST_BASE[d] + bits(DIST_EXTRA[d]);\n        if (back > size) throw new Error('invalid compressed data');\n        room(len);\n        for (let k = 0; k < len; k++, size++) out[size] = out[size - back];\n      }\n    }\n  }\n  return out.subarray(0, size);\n}\n\n// --- PDF: embedded files ---------------------------------------------------------------------\n\n/**\n * Contents of the embedded files of a PDF (ZUGFeRD / Factur-X put the invoice XML there). Embedded\n * file streams are always top-level objects, so they can be found without reading the\n * cross-reference table, also in PDFs that keep their other objects in compressed object streams.\n * @param {Uint8Array} bytes\n * @returns {(Uint8Array | string)[]} the content of each file, or why it cannot be read\n */\nfunction embeddedFiles(bytes) {\n  // latin1 maps every byte to one character, so string positions are byte positions.\n  let s = '';\n  for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));\n  if (/\\/Encrypt\\b/.test(s)) throw new Error('PDF is encrypted');\n  /** @type {(Uint8Array | string)[]} */\n  const files = [];\n  for (const m of s.matchAll(/\\d+\\s+\\d+\\s+obj\\s*<</g)) {\n    // The object's dictionary, with nested dictionaries.\n    const start = (m.index ?? 0) + m[0].length - 2;\n    let depth = 0;\n    let end = start;\n    for (; end < s.length && end < start + 10000; end++) {\n      if (s.startsWith('<<', end)) {\n        depth++;\n        end++;\n      } else if (s.startsWith('>>', end)) {\n        depth--;\n        end++;\n        if (!depth) break;\n      }\n    }\n    const dict = s.slice(start, end + 1);\n    // /Type is optional on embedded file streams; an XML subtype marks them too (but not XMP metadata).\n    const embedded =\n      /\\/Type\\s*\\/EmbeddedFile\\b/.test(dict) ||\n      (/\\/Subtype\\s*\\/\\S*xml/i.test(dict) && !/\\/Type\\s*\\/Metadata/.test(dict));\n    const stream = /^\\s*stream(\\r\\n|\\n|\\r)/.exec(s.slice(end + 1, end + 20));\n    if (!embedded || !stream) continue;\n    const dataStart = end + 1 + stream[0].length;\n    // A direct /Length is used when it ends at \"endstream\"; otherwise (indirect length) the data\n    // runs to the next \"endstream\".\n    const direct = /\\/Length\\s+(\\d+)(?!\\s+\\d+\\s+R)/.exec(dict);\n    let dataEnd = direct ? dataStart + Number(direct[1]) : -1;\n    if (dataEnd < 0 || !/^\\s*endstream/.test(s.slice(dataEnd, dataEnd + 20))) {\n      dataEnd = s.indexOf('endstream', dataStart);\n      if (dataEnd < 0) continue;\n      if (s[dataEnd - 1] === '\\n') dataEnd--;\n      if (s[dataEnd - 1] === '\\r') dataEnd--;\n    }\n    const raw = bytes.subarray(dataStart, dataEnd);\n    const filters = [...(/\\/Filter\\s*(\\[[^\\]]*\\]|\\/\\w+)/.exec(dict)?.[1] ?? '').matchAll(/\\/(\\w+)/g)].map((f) => f[1]);\n    if (filters.length > 1 || filters.some((f) => f !== 'FlateDecode'))\n      files.push(`unsupported PDF filter ${filters.join(', ')}`);\n    else if (/\\/Predictor\\s+([2-9]|\\d\\d)/.test(dict)) files.push('unsupported PDF predictor');\n    else if (!filters.length) files.push(raw);\n    else {\n      try {\n        files.push(inflate(raw, MAX_XML_BYTES));\n      } catch (err) {\n        files.push(err instanceof Error ? err.message : String(err));\n      }\n    }\n  }\n  return files;\n}\n\n/**\n * @typedef {{ status: string, reasons: string[], plain_pdf?: boolean, source?: string, invoice?: EInvoice }} ReadResult\n */\n\n/**\n * Root element to invoice data, or the reason it is not an e-invoice this workflow reads.\n * @param {El} root\n * @returns {EInvoice}\n */\nfunction invoiceFrom(root) {\n  if (root.name === 'Invoice' || root.name === 'CreditNote') return fromUbl(root);\n  if (root.name === 'CrossIndustryInvoice') return fromCii(root);\n  if (root.name === 'CrossIndustryDocument')\n    throw new Error('ZUGFeRD 1.0 XML: not an EN 16931 e-invoice, check the invoice by hand');\n  throw new Error(`XML is not an e-invoice (root element ${root.name})`);\n}\n\n/**\n * @param {Uint8Array} bytes\n * @param {string} mediaType\n * @returns {ReadResult}\n */\nfunction read(bytes, mediaType) {\n  try {\n    if (mediaType !== 'application/pdf')\n      return { status: 'pending', reasons: [], source: 'XML', invoice: invoiceFrom(parseXml(decodeText(bytes))) };\n    if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('file is not a PDF');\n    const problems = [];\n    for (const file of embeddedFiles(bytes)) {\n      if (typeof file === 'string') {\n        problems.push(file);\n        continue;\n      }\n      try {\n        return { status: 'pending', reasons: [], source: 'PDF', invoice: invoiceFrom(parseXml(decodeText(file))) };\n      } catch (err) {\n        problems.push(err instanceof Error ? err.message : String(err));\n      }\n    }\n    if (problems.length) throw new Error(`embedded XML: ${problems.join('; ')}`);\n    return {\n      status: 'review',\n      reasons: ['PDF without embedded e-invoice XML (not a ZUGFeRD or Factur-X file)'],\n      plain_pdf: true,\n    };\n  } catch (err) {\n    return { status: 'review', reasons: [err instanceof Error ? err.message : String(err)] };\n  }\n}\n\n/**\n * Same invoice, by seller, number and amount due (for copies of one invoice in one email).\n * @param {EInvoice} inv\n */\nconst fingerprint = (inv) => [inv.seller_vat_id || inv.seller_name, inv.invoice_number, inv.payable].join('|');\n\n/** @type {{ json: Record<string, unknown>, binary?: Record<string, unknown>, pairedItem: { item: number } }[]} */\nconst results = [];\n/** @type {Map<string, Set<string>>} fingerprints of the invoices read per email */\nconst seen = new Map();\n\n$input.all().forEach((item, i) => {\n  const { fileBase64, ...file } = /** @type {Record<string, any>} */ (item.json);\n  const bytes = Buffer.from(String(fileBase64 ?? ''), 'base64');\n  const { invoice, ...status } = read(bytes, file.media_type);\n  if (invoice) {\n    const prints = seen.get(file.message_id) ?? new Set();\n    seen.set(file.message_id, prints);\n    if (prints.has(fingerprint(invoice))) return;\n    prints.add(fingerprint(invoice));\n  }\n  results.push({\n    json: {\n      ...file,\n      ...status,\n      ...(invoice ?? {}),\n    },\n    binary: item.binary,\n    pairedItem: { item: i },\n  });\n});\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn results.filter((r) => !(r.json.plain_pdf && seen.get(String(r.json.message_id))?.size));\n"
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Validate\" (mode: run once for all items).\n// Checks the data read from each e-invoice and turns it into a record for the sheet: required\n// business terms present, amounts with at most two decimals, the EN 16931 sum rules compared in\n// whole cents (lines, net, VAT, gross, amount due), the VAT breakdown, dates, IBAN checksum.\n// Every problem is collected as a reason and the item gets status \"review\"; only a record without\n// any reason is written to the sheet as \"ok\". The rules follow EN 16931 and XRechnung, but this is\n// not a full validation: the KoSIT validator checks several hundred rules (see README).\n\n// Invoice type codes allowed by XRechnung (BR-DE-17); 381 is a credit note.\nconst TYPE_CODES = ['326', '380', '381', '384', '389', '875', '876', '877'];\n// VAT categories whose VAT amount is always 0: zero rated, exempt, reverse charge, intra-community,\n// export, not subject to VAT.\nconst ZERO_VAT = ['Z', 'E', 'AE', 'K', 'G', 'O'];\n// EN 16931 allows a VAT amount per category that differs from basis × rate by less than one\n// currency unit (BR-S-09 and similar), to allow for VAT calculated per line.\nconst VAT_TOLERANCE_CENTS = 100;\nconst MAX_LINE_ITEMS = 100;\n// IBAN length per country, from the SWIFT IBAN registry (release 101).\nconst IBAN_LENGTHS = Object.fromEntries(\n  (\n    'AD24 AE23 AL28 AT20 AZ28 BA20 BE16 BG22 BH22 BI27 BR29 BY28 CH21 CR22 CY28 CZ24 DE22 DJ27 DK18 DO28 ' +\n    'EE20 EG29 ES24 FI18 FK18 FO18 FR27 GB22 GE22 GI23 GL18 GR27 GT28 HN28 HR21 HU28 IE22 IL23 IQ23 IS26 ' +\n    'IT27 JO30 KW30 KZ20 LB28 LC32 LI21 LT20 LU20 LV21 LY25 MC27 MD24 ME22 MK19 MN20 MR27 MT31 MU30 NI28 ' +\n    'NL18 NO15 OM23 PK24 PL28 PS29 PT25 QA29 RO24 RS22 RU33 SA24 SC31 SD18 SE24 SI19 SK24 SM27 SO23 ST25 ' +\n    'SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20 YE30'\n  )\n    .split(' ')\n    .map((s) => [s.slice(0, 2), Number(s.slice(2))]),\n);\n\n/**\n * @typedef {Record<string, any>} Read output of Read e-invoice: file and email fields, status,\n *   reasons and, for a file that could be read, the invoice fields as text (see read-einvoice.js).\n *\n * @typedef {object} VatLine\n * @property {string} category BT-118\n * @property {number | null} rate BT-119, percent\n * @property {number | null} basis BT-116\n * @property {number | null} vat BT-117\n */\n\n/** @param {number} c */\nconst fmt = (c) => (c / 100).toFixed(2);\n\n/** @param {string} s */\nconst safeName = (s) =>\n  s\n    .replace(/[\\\\/:*?\"<>|]/g, ' ')\n    .replace(/\\p{Cc}/gu, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n\n/** @param {string} iban normalised */\nfunction ibanValid(iban) {\n  if (!/^[A-Z]{2}\\d{2}[A-Z0-9]+$/.test(iban)) return false;\n  if (iban.length !== IBAN_LENGTHS[iban.slice(0, 2)]) return false;\n  const digits = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => String(c.charCodeAt(0) - 55));\n  let rest = 0;\n  for (const c of digits) rest = (rest * 10 + Number(c)) % 97;\n  return rest === 1;\n}\n\n/** @param {string} s */\nconst isoDate = (s) => {\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return false;\n  const d = new Date(`${s}T00:00:00Z`);\n  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;\n};\n\n/**\n * @param {Read} r\n * @param {Date} now\n */\nfunction validate(r, now) {\n  /** @type {string[]} */\n  const reasons = [];\n\n  /**\n   * An XML amount (\"1234.5\", \"-12.00\") as whole cents; null if empty. More than two decimals is\n   * an error in EN 16931 for every amount checked here (BR-DEC rules).\n   * @param {string} label\n   * @param {unknown} raw\n   * @param {boolean} [required]\n   */\n  const cents = (label, raw, required = false) => {\n    const s = String(raw ?? '').trim();\n    if (!s) {\n      if (required) reasons.push(`${label} missing`);\n      return null;\n    }\n    const m = /^([+-]?)(\\d+)(?:\\.(\\d{1,2}))?$/.exec(s);\n    if (!m) {\n      reasons.push(`${label} \"${s.slice(0, 30)}\" is not an amount with at most 2 decimals`);\n      return null;\n    }\n    const c = Number(m[2] + (m[3] ?? '').padEnd(2, '0'));\n    return m[1] === '-' ? -c : c;\n  };\n  /** @param {string} label @param {unknown} v */\n  const need = (label, v) => {\n    if (!String(v ?? '').trim()) reasons.push(`${label} missing`);\n  };\n\n  const cid = String(r.customization_id ?? '');\n  const format =\n    r.source === 'PDF'\n      ? `ZUGFeRD PDF (${r.syntax})`\n      : `${/xrechnung/i.test(cid) ? 'XRechnung' : 'EN 16931'} ${r.syntax}`;\n  if (/minimum|basicwl/i.test(cid))\n    reasons.push(`profile ${cid} is below EN 16931 (no line items), check the invoice by hand`);\n  else need('specification (BT-24)', cid);\n\n  need('invoice number (BT-1)', r.invoice_number);\n  need('seller name (BT-27)', r.seller_name);\n  need('seller country (BT-40)', r.seller_country);\n  need('buyer name (BT-44)', r.buyer_name);\n\n  const typeCode = String(r.type_code ?? '');\n  if (!TYPE_CODES.includes(typeCode))\n    reasons.push(`invoice type code \"${typeCode}\" is not one of ${TYPE_CODES.join(', ')}`);\n  const credit = typeCode === '381';\n\n  const currency = String(r.currency ?? '');\n  if (!/^[A-Z]{3}$/.test(currency)) reasons.push(`currency \"${currency}\" is not an ISO 4217 code`);\n\n  for (const [label, d] of [\n    ['issue date (BT-2)', r.issue_date],\n    ['due date (BT-9)', r.due_date],\n  ])\n    if (d && !isoDate(d)) reasons.push(`${label} \"${String(d).slice(0, 20)}\" is not a date`);\n  if (!r.issue_date) reasons.push('issue date (BT-2) missing');\n  if (isoDate(r.issue_date) && r.issue_date > new Date(now.getTime() + 86400000).toISOString().slice(0, 10))\n    reasons.push(`issue date ${r.issue_date} is in the future`);\n  if (isoDate(r.issue_date) && isoDate(r.due_date) && r.due_date < r.issue_date)\n    reasons.push(`due date ${r.due_date} is before issue date ${r.issue_date}`);\n\n  const lineTotal = cents('sum of line amounts (BT-106)', r.line_total, true);\n  const allowances = cents('allowances (BT-107)', r.allowance_total) ?? 0;\n  const charges = cents('charges (BT-108)', r.charge_total) ?? 0;\n  const net = cents('net total (BT-109)', r.net_total, true);\n  // BT-110 may be left out when there is no VAT.\n  const vat = cents('VAT total (BT-110)', r.vat_total) ?? 0;\n  const gross = cents('gross total (BT-112)', r.gross_total, true);\n  const prepaid = cents('prepaid amount (BT-113)', r.prepaid) ?? 0;\n  const rounding = cents('rounding amount (BT-114)', r.rounding) ?? 0;\n  const payable = cents('amount due (BT-115)', r.payable, true);\n\n  const lines = /** @type {Record<string, string>[]} */ (r.lines ?? []);\n  if (!lines.length) reasons.push('no invoice lines (BG-25)');\n  if (r.line_count > lines.length) reasons.push(`${r.line_count} invoice lines, more than this workflow reads`);\n  const lineAmounts = lines.map((l, i) => cents(`line ${l.id || i + 1} amount (BT-131)`, l.net, true));\n  if (lines.length && lineTotal !== null && lineAmounts.every((a) => a !== null) && r.line_count === lines.length) {\n    const sum = lineAmounts.reduce((s, a) => s + (a ?? 0), 0);\n    if (sum !== lineTotal)\n      reasons.push(`lines add up to ${fmt(sum)}, but the line total (BT-106) is ${fmt(lineTotal)}`);\n  }\n  if (lineTotal !== null && net !== null && lineTotal - allowances + charges !== net)\n    reasons.push(\n      `line total ${fmt(lineTotal)} - allowances ${fmt(allowances)} + charges ${fmt(charges)} is not the net total ${fmt(net)}`,\n    );\n  if (net !== null && gross !== null && net + vat !== gross)\n    reasons.push(`net ${fmt(net)} + VAT ${fmt(vat)} = ${fmt(net + vat)}, but gross is ${fmt(gross)}`);\n  if (gross !== null && payable !== null && gross - prepaid + rounding !== payable)\n    reasons.push(\n      `gross ${fmt(gross)} - prepaid ${fmt(prepaid)} + rounding ${fmt(rounding)} is not the amount due ${fmt(payable)}`,\n    );\n\n  /** @type {VatLine[]} */\n  const breakdown = (r.vat_breakdown ?? []).map((/** @type {Record<string, string>} */ b, /** @type {number} */ i) => {\n    const label = `VAT breakdown ${i + 1}`;\n    const rate = /^\\d{1,3}(\\.\\d+)?$/.test(String(b.rate ?? '').trim()) ? Number(b.rate) : null;\n    if (rate === null && b.category !== 'O') reasons.push(`${label}: rate (BT-119) missing or not a number`);\n    return {\n      category: String(b.category ?? ''),\n      rate,\n      basis: cents(`${label} taxable amount (BT-116)`, b.basis, true),\n      vat: cents(`${label} VAT amount (BT-117)`, b.vat, true),\n    };\n  });\n  if (!breakdown.length) reasons.push('no VAT breakdown (BG-23)');\n  // A seller outside the scope of VAT (category O only) has neither.\n  if (!r.seller_vat_id && !r.seller_tax_number && breakdown.some((b) => b.category !== 'O'))\n    reasons.push('seller VAT ID (BT-31) and tax number (BT-32) missing');\n  breakdown.forEach((b, i) => {\n    if (b.basis === null || b.vat === null) return;\n    if (ZERO_VAT.includes(b.category) && b.vat !== 0)\n      reasons.push(`VAT breakdown ${i + 1}: category ${b.category} needs VAT 0, not ${fmt(b.vat)}`);\n    else if (b.rate !== null && Math.abs(Math.round((b.basis * b.rate) / 100) - b.vat) >= VAT_TOLERANCE_CENTS)\n      reasons.push(`VAT breakdown ${i + 1}: ${b.rate}% of ${fmt(b.basis)} is not ${fmt(b.vat)}`);\n  });\n  if (breakdown.length && breakdown.every((b) => b.basis !== null && b.vat !== null)) {\n    const vatSum = breakdown.reduce((s, b) => s + (b.vat ?? 0), 0);\n    const basisSum = breakdown.reduce((s, b) => s + (b.basis ?? 0), 0);\n    if (vatSum !== vat) reasons.push(`VAT breakdown adds up to ${fmt(vatSum)}, but the VAT total is ${fmt(vat)}`);\n    if (net !== null && basisSum !== net)\n      reasons.push(`VAT breakdown taxable amounts add up to ${fmt(basisSum)}, but the net total is ${fmt(net)}`);\n  }\n\n  if (payable !== null && payable > 0 && !r.due_date && !r.payment_terms)\n    reasons.push('neither due date (BT-9) nor payment terms (BT-20)');\n\n  const iban = String(r.iban ?? '')\n    .toUpperCase()\n    .replace(/\\s/g, '');\n  if (r.payment_means_code === '58' && !iban) reasons.push('SEPA credit transfer (58) without IBAN (BT-84)');\n  if (iban && (r.payment_means_code === '58' || /^[A-Z]{2}\\d{2}/.test(iban)) && !ibanValid(iban))\n    reasons.push(`IBAN ${iban} is not valid`);\n\n  // Credit notes are stored with negative amounts, as in the invoice extraction workflow.\n  const sign = credit ? -1 : 1;\n  /** @param {number | null} c */\n  const amount = (c) => (c === null ? null : (sign * c) / 100);\n  const ext = r.media_type === 'application/pdf' ? 'pdf' : 'xml';\n  return {\n    status: reasons.length ? 'review' : 'ok',\n    reasons,\n    format,\n    profile: cid,\n    document_type: credit ? 'credit_note' : 'invoice',\n    type_code: typeCode,\n    invoice_number: r.invoice_number,\n    issue_date: r.issue_date,\n    due_date: r.due_date,\n    currency,\n    buyer_reference: r.buyer_reference,\n    buyer_name: r.buyer_name,\n    seller_name: r.seller_name,\n    seller_vat_id: String(r.seller_vat_id ?? '')\n      .toUpperCase()\n      .replace(/[\\s.\\-/]/g, ''),\n    seller_tax_number: r.seller_tax_number,\n    seller_address: [r.seller_street, [r.seller_postcode, r.seller_city].filter(Boolean).join(' '), r.seller_country]\n      .filter(Boolean)\n      .join(', '),\n    payment_terms: r.payment_terms,\n    payment_means_code: r.payment_means_code,\n    iban,\n    net_amount: amount(net),\n    vat_amount: amount(vat),\n    gross_amount: amount(gross),\n    payable_amount: amount(payable),\n    vat_breakdown: breakdown.map((b) => ({ ...b, basis: amount(b.basis), vat: amount(b.vat) })),\n    line_items: lines.slice(0, MAX_LINE_ITEMS).map((l, i) => ({\n      id: l.id,\n      name: l.name,\n      quantity: l.quantity,\n      unit: l.unit,\n      amount: amount(lineAmounts[i]),\n    })),\n    line_count: r.line_count,\n    drive_file_name: `${safeName(`${r.issue_date} ${r.seller_name} ${r.invoice_number}`).slice(0, 150)}.${ext}`,\n  };\n}\n\nconst now = new Date();\nconst FIELDS = [\n  ...['message_id', 'thread_id', 'email_from', 'email_subject', 'received_at', 'gmail_link', 'processed_at'],\n  ...['file_name', 'media_type', 'source'],\n];\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn $input.all().map((item, i) => {\n  const r = /** @type {Read} */ (item.json);\n  const file = Object.fromEntries(FIELDS.map((f) => [f, r[f] ?? '']));\n  // Files that could not be read keep their status and reasons.\n  const result = r.status === 'pending' ? validate(r, now) : { status: r.status, reasons: r.reasons ?? [] };\n  return { json: { ...file, ...result }, binary: item.binary, pairedItem: { item: i } };\n});\n"
+      }
+    },
+    {
+      "id": "collect-results",
+      "name": "Collect results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "read-existing-invoices",
+      "name": "Read existing invoices",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Settings').first().json.sheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Invoices"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets account"
+        }
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "check-duplicates",
+      "name": "Check duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Check duplicates\" (mode: run once for all items).\n// Compares every valid invoice with the rows already in the Invoices sheet (the input of this\n// node) and with the other invoices of this run. The same seller and invoice number is a\n// duplicate. An IBAN that differs from the one on earlier invoices of the same seller is sent to\n// review, since a changed bank account is the usual pattern of invoice fraud; a correct XML file\n// does not make the account in it correct.\n// Also adds `reason`, the reasons as one line for Slack and the Review tab.\n\n/**\n * @typedef {object} Row\n * @property {string} status\n * @property {string[]} reasons\n * @property {string} [message_id]\n * @property {string} [seller_name]\n * @property {string} [seller_vat_id]\n * @property {string} [invoice_number]\n * @property {string} [iban]\n * @property {number} [row_number] set by the Google Sheets node on rows it reads\n *\n * @typedef {{ row: Row, inSheet: boolean }} Earlier an invoice to compare with, and where it came from\n */\n\nconst LEGAL_FORMS =\n  /\\b(gmbh|mbh|ag|kg|ohg|ug|e\\s?k|e\\s?v|gbr|co|ltd|limited|llc|inc|plc|sarl|sas|sa|srl|spa|bv|nv|se)\\b/g;\n\n/** @param {unknown} s */\nconst name = (s) =>\n  String(s ?? '')\n    .toLowerCase()\n    .replace(/[.,&+]/g, ' ')\n    .replace(LEGAL_FORMS, ' ')\n    .replace(/[^\\p{L}\\p{N}]/gu, '');\n\n/** @param {unknown} s VAT ID or IBAN: ASCII letters and digits only */\nconst code = (s) =>\n  String(s ?? '')\n    .toUpperCase()\n    .replace(/[^A-Z0-9]/g, '');\n\n/**\n * Invoice number for comparison: case and Unicode forms folded, and any run of spaces or\n * punctuation reduced to one separator, so \"RE 2026/0042\" equals \"re-2026-0042\" while\n * \"INV-12-34\" and \"INV-123-4\" stay different.\n * @param {unknown} s\n */\nconst number = (s) =>\n  String(s ?? '')\n    .normalize('NFKC')\n    .toUpperCase()\n    .replace(/[^\\p{L}\\p{N}]+/gu, ' ')\n    .trim();\n\n/** @param {Row} a @param {Row} b */\nfunction sameSeller(a, b) {\n  const [va, vb] = [code(a.seller_vat_id), code(b.seller_vat_id)];\n  if (va && vb) return va === vb;\n  return name(a.seller_name) !== '' && name(a.seller_name) === name(b.seller_name);\n}\n\n/** @param {Earlier} e */\nconst where = ({ row, inSheet }) =>\n  !inSheet\n    ? 'another email in this run'\n    : row.row_number\n      ? `row ${row.row_number} of the Invoices sheet`\n      : 'a row of the Invoices sheet';\n\n// With an empty sheet the read node still outputs one empty item.\n/** @type {Earlier[]} */\nconst earlier = $input\n  .all()\n  .map((i) => /** @type {Row} */ (i.json))\n  .filter((r) => r.invoice_number)\n  .map((row) => ({ row, inSheet: true }));\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn $('Collect results')\n  .all()\n  .map((item) => {\n    const rec = /** @type {Row} */ ({ ...item.json, reasons: [.../** @type {Row} */ (item.json).reasons] });\n    if (rec.status === 'ok') {\n      const twin = earlier.find(\n        (e) => sameSeller(rec, e.row) && number(e.row.invoice_number) === number(rec.invoice_number),\n      );\n      const ibans = earlier.filter(({ row }) => row.iban && sameSeller(rec, row)).map(({ row }) => code(row.iban));\n      if (twin) {\n        rec.status = 'duplicate';\n        rec.reasons.push(`same seller and invoice number as ${where(twin)}`);\n      } else if (rec.iban && ibans.length && !ibans.includes(code(rec.iban))) {\n        rec.status = 'review';\n        rec.reasons.push(`IBAN differs from earlier invoices of this seller (${[...new Set(ibans)].join(', ')})`);\n      } else earlier.push({ row: rec, inSheet: false });\n    }\n    return { json: { ...rec, reason: rec.reasons.join('; ') }, binary: item.binary };\n  });\n"
+      }
+    },
+    {
+      "id": "valid-",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "valid",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "file-in-drive-",
+      "name": "File in Drive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2420,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "drive",
+              "leftValue": "={{ $('Settings').first().json.driveFolderId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "upload-to-drive",
+      "name": "Upload to Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "inputDataFieldName": "file",
+        "name": "={{ $json.drive_file_name }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Settings').first().json.driveFolderId }}"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "prepare-rows",
+      "name": "Prepare rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// @ts-check\n// n8n Code node \"Prepare rows\" (mode: run once for all items).\n// Puts each valid invoice into the shape of the Invoices sheet. When the files are filed in Drive,\n// the input is the upload result (the file's metadata, one item per invoice, in the same order)\n// and the row gets a link to the file; otherwise the input is the invoices themselves.\n\nconst records = $('Check duplicates')\n  .all()\n  .filter((item) => /** @type {{ status: string }} */ (item.json).status === 'ok');\nconst uploaded = Boolean(/** @type {{ driveFolderId?: string }} */ ($('Settings').first().json).driveFolderId);\n\n/** @param {number | null} n */\nconst money = (n) => (n === null ? '?' : n.toFixed(2));\n\n// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.\nreturn $input.all().map((input, i) => {\n  const r = /** @type {Record<string, any>} */ (records[i].json);\n  const { id } = uploaded ? /** @type {{ id?: string }} */ (input.json) : {};\n  return {\n    json: {\n      processed_at: r.processed_at,\n      format: r.format,\n      document_type: r.document_type,\n      type_code: r.type_code,\n      invoice_number: r.invoice_number,\n      issue_date: r.issue_date,\n      due_date: r.due_date,\n      seller_name: r.seller_name,\n      seller_vat_id: r.seller_vat_id,\n      seller_tax_number: r.seller_tax_number,\n      seller_address: r.seller_address,\n      buyer_name: r.buyer_name,\n      buyer_reference: r.buyer_reference,\n      currency: r.currency,\n      net_amount: r.net_amount,\n      vat_amount: r.vat_amount,\n      gross_amount: r.gross_amount,\n      payable_amount: r.payable_amount,\n      vat_breakdown: r.vat_breakdown\n        .map(\n          (/** @type {{ category: string, rate: number | null, basis: number | null, vat: number | null }} */ b) =>\n            `${b.category} ${b.rate ?? '-'}%: ${money(b.basis)} + ${money(b.vat)}`,\n        )\n        .join('; '),\n      iban: r.iban,\n      payment_terms: r.payment_terms,\n      line_items: JSON.stringify(r.line_items),\n      file_name: r.file_name,\n      file_link: id ? `https://drive.google.com/file/d/${id}/view` : '',\n      email_from: r.email_from,\n      email_subject: r.email_subject,\n      message_id: r.message_id,\n    },\n    pairedItem: { item: i },\n  };\n});\n"
+      }
+    },
+    {
+      "id": "append-to-invoices",
+      "name": "Append to Invoices",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3080,
+        100
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Settings').first().json.sheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Invoices"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processed_at": "={{ $json.processed_at }}",
+            "format": "={{ $json.format }}",
+            "document_type": "={{ $json.document_type }}",
+            "type_code": "={{ $json.type_code }}",
+            "invoice_number": "={{ $json.invoice_number }}",
+            "issue_date": "={{ $json.issue_date }}",
+            "due_date": "={{ $json.due_date }}",
+            "seller_name": "={{ $json.seller_name }}",
+            "seller_vat_id": "={{ $json.seller_vat_id }}",
+            "seller_tax_number": "={{ $json.seller_tax_number }}",
+            "seller_address": "={{ $json.seller_address }}",
+            "buyer_name": "={{ $json.buyer_name }}",
+            "buyer_reference": "={{ $json.buyer_reference }}",
+            "currency": "={{ $json.currency }}",
+            "net_amount": "={{ $json.net_amount }}",
+            "vat_amount": "={{ $json.vat_amount }}",
+            "gross_amount": "={{ $json.gross_amount }}",
+            "payable_amount": "={{ $json.payable_amount }}",
+            "vat_breakdown": "={{ $json.vat_breakdown }}",
+            "iban": "={{ $json.iban }}",
+            "payment_terms": "={{ $json.payment_terms }}",
+            "line_items": "={{ $json.line_items }}",
+            "file_name": "={{ $json.file_name }}",
+            "file_link": "={{ $json.file_link }}",
+            "email_from": "={{ $json.email_from }}",
+            "email_subject": "={{ $json.email_subject }}",
+            "message_id": "={{ $json.message_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "format",
+              "displayName": "format",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "type_code",
+              "displayName": "type_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "issue_date",
+              "displayName": "issue_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "due_date",
+              "displayName": "due_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seller_name",
+              "displayName": "seller_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seller_vat_id",
+              "displayName": "seller_vat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seller_tax_number",
+              "displayName": "seller_tax_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seller_address",
+              "displayName": "seller_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "buyer_name",
+              "displayName": "buyer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "buyer_reference",
+              "displayName": "buyer_reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "net_amount",
+              "displayName": "net_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vat_amount",
+              "displayName": "vat_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "gross_amount",
+              "displayName": "gross_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "payable_amount",
+              "displayName": "payable_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vat_breakdown",
+              "displayName": "vat_breakdown",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "iban",
+              "displayName": "iban",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "payment_terms",
+              "displayName": "payment_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "line_items",
+              "displayName": "line_items",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_name",
+              "displayName": "file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_link",
+              "displayName": "file_link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_from",
+              "displayName": "email_from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_subject",
+              "displayName": "email_subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "label-as-processed",
+      "name": "Label as processed",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3300,
+        100
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "addLabels",
+        "messageId": "={{ $json.message_id }}",
+        "labelIds": "={{ [ $('Settings').first().json.processedLabelId ] }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "post-to-slack",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        2420,
+        460
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Settings').first().json.slackChannel }}"
+        },
+        "text": "=:warning: E-invoice needs review ({{ $json.status }}): *{{ String($json.file_name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}* from {{ String($json.email_from).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}\n{{ String($json.reason).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}\n{{ $json.gmail_link ? '<' + $json.gmail_link + '|Open the email>' : '' }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "id": "append-to-review",
+      "name": "Append to Review",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2420,
+        640
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Settings').first().json.sheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Review"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processed_at": "={{ $json.processed_at }}",
+            "status": "={{ $json.status }}",
+            "reason": "={{ $json.reason }}",
+            "format": "={{ $json.format }}",
+            "seller_name": "={{ $json.seller_name }}",
+            "invoice_number": "={{ $json.invoice_number }}",
+            "issue_date": "={{ $json.issue_date }}",
+            "currency": "={{ $json.currency }}",
+            "gross_amount": "={{ $json.gross_amount }}",
+            "file_name": "={{ $json.file_name }}",
+            "email_from": "={{ $json.email_from }}",
+            "email_subject": "={{ $json.email_subject }}",
+            "gmail_link": "={{ $json.gmail_link }}",
+            "message_id": "={{ $json.message_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "format",
+              "displayName": "format",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seller_name",
+              "displayName": "seller_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "issue_date",
+              "displayName": "issue_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "gross_amount",
+              "displayName": "gross_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_name",
+              "displayName": "file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_from",
+              "displayName": "email_from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_subject",
+              "displayName": "email_subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "gmail_link",
+              "displayName": "gmail_link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "label-for-review",
+      "name": "Label for review",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        820
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "addLabels",
+        "messageId": "={{ $json.message_id }}",
+        "labelIds": "={{ [ $('Settings').first().json.reviewLabelId ] }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Split attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split attachments": {
+      "main": [
+        [
+          {
+            "node": "XML or PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "XML or PDF?": {
+      "main": [
+        [
+          {
+            "node": "Read file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collect results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Read file": {
+      "main": [
+        [
+          {
+            "node": "Read e-invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read e-invoice": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Collect results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect results": {
+      "main": [
+        [
+          {
+            "node": "Read existing invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read existing invoices": {
+      "main": [
+        [
+          {
+            "node": "Check duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check duplicates": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "File in Drive?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append to Review",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Label for review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File in Drive?": {
+      "main": [
+        [
+          {
+            "node": "Upload to Drive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Drive": {
+      "main": [
+        [
+          {
+            "node": "Prepare rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare rows": {
+      "main": [
+        [
+          {
+            "node": "Append to Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Invoices": {
+      "main": [
+        [
+          {
+            "node": "Label as processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
