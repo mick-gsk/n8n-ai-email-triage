@@ -1,5 +1,5 @@
-// Runs of workflow.json in a real n8n instance (npm run check:n8n). The Gmail trigger emits test
-// emails with attachments; Claude is answered by a local mock.
+// Runs of workflow.json in a real n8n instance (npm run check:n8n). Gmail, Sheets and Slack
+// are replaced by nodes that record what they would send; Claude is answered by a local mock.
 import { readFileSync } from 'node:fs';
 
 const extractions = JSON.parse(readFileSync(new URL('./fixtures/extractions.json', import.meta.url), 'utf8'));
@@ -32,11 +32,22 @@ const claudeSays = (extraction) => ({
   body: { content: [{ type: 'text', text: JSON.stringify(extraction) }], stop_reason: 'end_turn' },
 });
 
+const otherRow = {
+  row_number: 2,
+  supplier_name: 'Example Hosting Ltd',
+  supplier_vat_id: 'GB123456789',
+  invoice_number: 'INV 10016',
+  invoice_date: '2026-09-05',
+  gross_amount: 1440,
+  iban: 'GB82WEST12345698765432',
+};
+
 export const cases = [
   {
-    name: 'the invoice PDF is sent to Claude as a document and the reply is parsed',
+    name: 'a clean invoice is read and passes all checks',
     ...withInvoice,
     http: { 'POST api.anthropic.com/v1/messages': () => claudeSays(extractions.germanInvoice) },
+    stubs: { 'Read existing invoices': [otherRow] },
     check(run, assert) {
       const claude = run.requests.filter((r) => r.host === 'api.anthropic.com');
       assert.equal(claude.length, 1, 'the logo is not sent');
@@ -49,16 +60,14 @@ export const cases = [
       assert.equal(instruction.type, 'text');
       assert.equal(claude[0].body.output_config.format.type, 'json_schema');
 
-      const [result] = run.out('Collect results');
-      assert.equal(result.status, 'ok');
-      assert.equal(result.file_name, 'RE-2026-0042.pdf');
-      assert.equal(result.invoice_number, 'RE-2026-0042');
-      assert.equal(result.invoice_date, '2026-10-02');
-      assert.equal(result.due_date, '2026-10-16');
-      assert.equal(result.gross_amount, 1487.5);
-      assert.equal(result.supplier_vat_id, 'DE123456788');
-      assert.equal(result.iban, 'DE89370400440532013000');
-      assert.equal(result.message_id, '19a0f1');
+      const [checked] = run.out('Check duplicates');
+      assert.equal(checked.status, 'ok');
+      assert.equal(checked.supplier_vat_id, 'DE123456788');
+      assert.equal(checked.invoice_date, '2026-10-02');
+      assert.equal(checked.due_date, '2026-10-16');
+      assert.equal(checked.gross_amount, 1487.5);
+      assert.equal(checked.iban, 'DE89370400440532013000');
+      assert.equal(run.ran('Post to Slack'), false);
     },
   },
   {
@@ -68,21 +77,51 @@ export const cases = [
       'POST api.anthropic.com/v1/messages': () =>
         claudeSays({ ...extractions.germanInvoice, gross_amount: '1.478,50' }),
     },
+    stubs: { 'Read existing invoices': [otherRow] },
     check(run, assert) {
-      const [result] = run.out('Collect results');
-      assert.equal(result.status, 'review');
-      assert.deepEqual(result.reasons, ['net 1250.00 + VAT 237.50 = 1487.50, but gross is 1478.50']);
+      const [slack] = run.out('Post to Slack');
+      assert.match(slack.sent.text, /needs review \(review\): \*RE-2026-0042\.pdf\*/);
+      assert.match(slack.sent.text, /net 1250\.00 \+ VAT 237\.50 = 1487\.50, but gross is 1478\.50/);
+      assert.match(slack.sent.text, /<https:\/\/mail\.google\.com\/mail\/u\/0\/#all\/19a0f1\|Open the email>$/);
+      assert.equal(run.out('Append to Review')[0].sent.columns.value.status, 'review');
+      assert.deepEqual(run.out('Label for review')[0].sent.labelIds, ['Label_INVOICE_REVIEW']);
+    },
+  },
+  {
+    name: 'an invoice already in the sheet is reported as a duplicate',
+    ...withInvoice,
+    http: { 'POST api.anthropic.com/v1/messages': () => claudeSays(extractions.germanInvoice) },
+    stubs: {
+      'Read existing invoices': [
+        otherRow,
+        {
+          row_number: 3,
+          supplier_name: 'Muster Bürobedarf GmbH',
+          supplier_vat_id: 'DE123456788',
+          invoice_number: 'RE-2026-0042',
+          invoice_date: '2026-10-02',
+          gross_amount: 1487.5,
+          iban: 'DE89370400440532013000',
+        },
+      ],
+    },
+    check(run, assert) {
+      const [review] = run.out('Append to Review');
+      assert.equal(review.sent.columns.value.status, 'duplicate');
+      assert.match(review.sent.columns.value.reason, /same supplier and invoice number as row 3/);
+      assert.equal(run.out('Post to Slack').length, 1);
     },
   },
   {
     name: 'a failed Claude call ends up in review',
     ...withInvoice,
     http: { 'POST api.anthropic.com/v1/messages': () => ({ status: 500, body: { error: { message: 'overloaded' } } }) },
+    stubs: { 'Read existing invoices': [otherRow] },
     check(run, assert) {
       assert.equal(run.requests.length, 4, 'one request and three retries');
-      const [result] = run.out('Collect results');
-      assert.equal(result.status, 'review');
-      assert.match(result.reasons[0], /^API error/);
+      const [review] = run.out('Append to Review');
+      assert.match(review.sent.columns.value.reason, /^API error/);
+      assert.equal(run.out('Label for review').length, 1);
     },
   },
   {
@@ -97,11 +136,13 @@ export const cases = [
         },
       },
     ],
+    stubs: { 'Read existing invoices': [otherRow] },
     check(run, assert) {
       assert.equal(run.requests.length, 0);
       assert.equal(run.ran('Ask Claude'), false);
-      const [result] = run.out('Collect results');
-      assert.deepEqual(result.reasons, ['no PDF or image attachment (found: Rechnung.docx)']);
+      const [review] = run.out('Append to Review');
+      assert.equal(review.sent.columns.value.reason, 'no PDF or image attachment (found: Rechnung.docx)');
+      assert.equal(run.out('Post to Slack').length, 1);
     },
   },
 ];

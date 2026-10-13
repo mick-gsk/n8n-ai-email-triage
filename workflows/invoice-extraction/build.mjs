@@ -2,7 +2,7 @@
 // output schema live in normal files that can be reviewed and tested.
 //
 //   node workflows/invoice-extraction/build.mjs   (or npm run build for all workflows)
-import { credential, link, node, reader, workflow, writeWorkflow } from '../../lib/n8n.mjs';
+import { credential, link, node, reader, slackSafe, workflow, writeWorkflow } from '../../lib/n8n.mjs';
 
 const read = reader(import.meta.url);
 
@@ -17,9 +17,31 @@ const settings = {
   minImageKB: 20,
   processedLabelId: 'Label_INVOICE_DONE',
   reviewLabelId: 'Label_INVOICE_REVIEW',
+  sheetId: 'YOUR_GOOGLE_SHEET_ID',
+  slackChannel: '#bookkeeping',
 };
 
 const gmail = credential('gmailOAuth2', 'Gmail account');
+const sheets = credential('googleSheetsOAuth2Api', 'Google Sheets account');
+const fromSettings = (key) => `={{ $('Settings').first().json.${key} }}`;
+
+const reviewColumns = [
+  'processed_at',
+  'status',
+  'reason',
+  'document_type',
+  'supplier_name',
+  'invoice_number',
+  'invoice_date',
+  'currency',
+  'gross_amount',
+  'file_name',
+  'email_from',
+  'email_subject',
+  'gmail_link',
+  'message_id',
+];
+const numeric = new Set(['net_amount', 'vat_amount', 'gross_amount']);
 
 // One If condition, in the format of If node version 2.3.
 const condition = (id, leftValue, operator, rightValue = '') => ({
@@ -30,6 +52,44 @@ const condition = (id, leftValue, operator, rightValue = '') => ({
   },
   options: {},
 });
+
+const appendRows = (name, position, tab, columns) =>
+  node(name, 'n8n-nodes-base.googleSheets', 4.7, position, {
+    parameters: {
+      operation: 'append',
+      documentId: { __rl: true, mode: 'id', value: fromSettings('sheetId') },
+      sheetName: { __rl: true, mode: 'name', value: tab },
+      columns: {
+        mappingMode: 'defineBelow',
+        value: Object.fromEntries(columns.map((c) => [c, `={{ $json.${c} }}`])),
+        matchingColumns: [],
+        schema: columns.map((id) => ({
+          id,
+          displayName: id,
+          required: false,
+          defaultMatch: false,
+          display: true,
+          type: numeric.has(id) ? 'number' : 'string',
+          canBeUsedToMatch: true,
+        })),
+      },
+      // RAW: text from a document, such as a supplier name "=HYPERLINK(...)", is stored as text
+      // instead of being run as a formula. Amounts are sent as numbers and stay numbers.
+      options: { cellFormat: 'RAW' },
+    },
+    credentials: sheets,
+  });
+
+const addLabel = (name, position, labelKey) =>
+  node(name, 'n8n-nodes-base.gmail', 2.2, position, {
+    parameters: {
+      resource: 'message',
+      operation: 'addLabels',
+      messageId: '={{ $json.message_id }}',
+      labelIds: `={{ [ $('Settings').first().json.${labelKey} ] }}`,
+    },
+    credentials: gmail,
+  });
 
 const nodes = [
   node('Gmail Trigger', 'n8n-nodes-base.gmailTrigger', 1.4, [0, 300], {
@@ -101,6 +161,45 @@ const nodes = [
   }),
 
   node('Collect results', 'n8n-nodes-base.merge', 3.2, [1760, 300], { parameters: {} }),
+
+  node('Read existing invoices', 'n8n-nodes-base.googleSheets', 4.7, [1980, 300], {
+    parameters: {
+      operation: 'read',
+      documentId: { __rl: true, mode: 'id', value: fromSettings('sheetId') },
+      sheetName: { __rl: true, mode: 'name', value: 'Invoices' },
+      options: {},
+    },
+    credentials: sheets,
+    executeOnce: true,
+    // An empty sheet returns no rows; without this the run would stop here.
+    alwaysOutputData: true,
+  }),
+
+  node('Check duplicates', 'n8n-nodes-base.code', 2, [2200, 300], {
+    parameters: { jsCode: read('src/check-duplicates.js') },
+  }),
+
+  node('Valid?', 'n8n-nodes-base.if', 2.3, [2420, 300], {
+    parameters: condition('valid', '={{ $json.status }}', { type: 'string', operation: 'equals' }, 'ok'),
+  }),
+
+  node('Post to Slack', 'n8n-nodes-base.slack', 2.4, [2640, 460], {
+    parameters: {
+      resource: 'message',
+      operation: 'post',
+      select: 'channel',
+      channelId: { __rl: true, mode: 'name', value: fromSettings('slackChannel') },
+      text:
+        `=:warning: Invoice needs review ({{ $json.status }}): *${slackSafe('file_name')}* from ${slackSafe('email_from')}\n` +
+        `${slackSafe('reason')}\n` +
+        `{{ $json.gmail_link ? '<' + $json.gmail_link + '|Open the email>' : '' }}`,
+      otherOptions: { includeLinkToWorkflow: false },
+    },
+    credentials: credential('slackApi', 'Slack account'),
+  }),
+
+  appendRows('Append to Review', [2640, 640], 'Review', reviewColumns),
+  addLabel('Label for review', [2640, 820], 'reviewLabelId'),
 ];
 
 const connections = {
@@ -115,6 +214,10 @@ const connections = {
   'Build request': link('Ask Claude'),
   'Ask Claude': link('Validate'),
   Validate: link('Collect results'),
+  'Collect results': link('Read existing invoices'),
+  'Read existing invoices': link('Check duplicates'),
+  'Check duplicates': link('Valid?'),
+  'Valid?': link(null, ['Post to Slack', 'Append to Review', 'Label for review']),
 };
 
 writeWorkflow(
