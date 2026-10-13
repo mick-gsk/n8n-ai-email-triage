@@ -13,7 +13,8 @@ export default [
     languageOptions: {
       sourceType: 'script',
       parserOptions: { ecmaFeatures: { globalReturn: true } },
-      globals: { $input: 'readonly', $: 'readonly' },
+      // Buffer and TextDecoder are also available in the Code node sandbox.
+      globals: { $input: 'readonly', $: 'readonly', Buffer: 'readonly', TextDecoder: 'readonly' },
     },
   },
 ];

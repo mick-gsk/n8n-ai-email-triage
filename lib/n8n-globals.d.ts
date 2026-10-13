@@ -17,3 +17,14 @@ declare const $input: N8nNodeOutput;
 
 /** Output of another node in the same execution, by node name. */
 declare function $(nodeName: string): N8nNodeOutput;
+
+/** Node's Buffer, which the Code node provides; only what src/*.js use. */
+declare const Buffer: {
+  from(data: string, encoding: 'base64' | 'latin1' | 'utf8'): Uint8Array & { toString(encoding?: string): string };
+};
+
+/** The WHATWG TextDecoder, which the Code node provides. */
+declare class TextDecoder {
+  constructor(label?: string, options?: { fatal?: boolean });
+  decode(input?: Uint8Array): string;
+}
