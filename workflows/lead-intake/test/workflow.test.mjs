@@ -13,6 +13,7 @@ test('workflow.json is in sync with src/ (run npm run build)', () => {
     const file = `${n.name.toLowerCase().replace(/[^a-z]+/g, '-')}.js`;
     assert.equal(n.parameters.jsCode, readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), n.name);
   }
+  assert.equal(settings.systemPrompt, readFileSync(new URL('../src/prompt.md', import.meta.url), 'utf8').trim());
 });
 
 test('the webhook answers through Respond, right after validation', () => {
@@ -26,6 +27,7 @@ test('the webhook answers through Respond, right after validation', () => {
   assert.equal(byName.Respond.parameters.options.responseCode, '={{ $json.response.status }}');
   assert.equal(byName.Respond.parameters.responseBody, '={{ $json.response.body }}');
   assert.deepEqual(next('Respond'), ['Accepted?']);
+  assert.deepEqual(next('Accepted?', 0), ['Prepare qualification']);
   assert.deepEqual(next('Accepted?', 1), ['Not configured?']);
   assert.deepEqual(next('Not configured?', 0), ['Report missing secret']);
 });
@@ -35,4 +37,26 @@ test('the exported secret is a placeholder the workflow refuses', () => {
   assert.equal(settings.secretQueryParam, '', 'secrets in URLs end up in logs, so this is opt-in');
   assert.ok(settings.fields.email.length && settings.fields.message.length);
   assert.ok(!settings.fields.email.includes(settings.honeypotField));
+});
+
+test('Ask Claude retries, times out and hands failures on instead of stopping', () => {
+  const ask = byName['Ask Claude'];
+  assert.equal(ask.retryOnFail, true);
+  assert.ok(ask.maxTries >= 3 && ask.maxTries <= 5, 'n8n allows 2 to 5 tries');
+  assert.ok(ask.waitBetweenTries > 0 && ask.waitBetweenTries <= 5000, 'n8n caps the wait at 5000 ms');
+  assert.equal(ask.onError, 'continueRegularOutput', 'a failed call must still mark the lead for review');
+  assert.ok(ask.parameters.options.timeout > 0);
+  assert.equal(ask.credentials.httpHeaderAuth.id, '');
+});
+
+test('spam is set apart from qualified leads', () => {
+  assert.deepEqual(next('Parse qualification'), ['Spam?']);
+  assert.deepEqual(next('Spam?', 0), ['Skip spam']);
+  assert.deepEqual(next('Skip spam'), []);
+  assert.deepEqual(next('Spam?', 1), ['Qualified lead']);
+  assert.match(byName['Spam?'].parameters.conditions.conditions[0].leftValue, /!\$json\.needs_review/);
+});
+
+test('hot score threshold is configured', () => {
+  assert.ok(Number.isInteger(settings.hotScore) && settings.hotScore > 0 && settings.hotScore <= 100);
 });
