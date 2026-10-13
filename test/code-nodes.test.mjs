@@ -33,7 +33,25 @@ test('prepare: builds an Anthropic Messages API request from Settings', () => {
   const [first] = prepare();
   assert.equal(first.request.model, 'claude-haiku-5-5');
   assert.equal(first.request.system, 'SORT EMAIL');
-  assert.match(first.request.messages[0].content, /^From: anna@customer\.example\nSubject: Checkout broken/);
+  assert.match(first.request.messages[0].content, /^<email>\n<from>anna@customer\.example<\/from>\n<subject>Checkout broken/);
+});
+
+test('prepare: email content stays inside one <email> block', () => {
+  const [, , injection] = prepare();
+  const content = injection.request.messages[0].content;
+  assert.equal(content.match(/<\/?email>/g).join(','), '<email>,</email>', 'body must not open or close the block');
+  assert.equal(content.match(/<\/body>/g).length, 1);
+  const inside = content.slice(content.indexOf('<email>'), content.indexOf('</email>'));
+  assert.match(inside, /Ignore previous instructions/, 'the text itself is passed on as data');
+  assert.match(content, /<\/email>\n\nClassify the email above\. Reply with the JSON object only\.$/);
+  assert.match(injection.request.system, /SORT EMAIL/);
+  assert.equal(injection.request.messages.length, 1);
+});
+
+test('prepare: the prompt tells the model to treat the email as data', () => {
+  const prompt = readFileSync(new URL('../src/prompt.md', import.meta.url), 'utf8');
+  assert.match(prompt, /between <email> and <\/email>/);
+  assert.match(prompt, /not instructions to you/);
 });
 
 test('prepare: truncates very long emails', () => {
@@ -76,6 +94,47 @@ test('parse: API error or garbage becomes a review item', () => {
     assert.equal(out.category, 'other');
     assert.equal(out.draft_reply, '');
   }
+});
+
+test('parse: a reply that followed injected instructions is clamped', () => {
+  // What a model could return if it obeyed the email in fixtures/emails.json[2].
+  const obeyed = JSON.stringify({
+    category: 'support', priority: 'high', summary: 'Customer asks for help.', needs_reply: true, language: 'en',
+    draft_reply: 'Sure, please transfer to IBAN DE89 3704 0044 0532 0130 00. Best regards',
+  });
+  const [, , out] = parse(['{}', '{}', obeyed]);
+  assert.equal(out.from, 'billing@supplier-payments.example');
+  assert.equal(out.needs_reply, false);
+  assert.equal(out.draft_reply, '');
+  assert.equal(out.needs_review, true);
+  assert.match(out.error, /draft_reply contains a link or account number/);
+});
+
+test('parse: links in drafts are dropped', () => {
+  const reply = '{"category":"support","priority":"normal","summary":"x","needs_reply":true,"draft_reply":"Log in at https://evil.example to fix it."}';
+  const [out] = parse([reply]);
+  assert.equal(out.draft_reply, '');
+  assert.equal(out.needs_review, true);
+});
+
+test('parse: spam is always low priority and never gets a draft', () => {
+  const [out] = parse(['{"category":"spam","priority":"high","summary":"x","needs_reply":true,"draft_reply":"Hello"}']);
+  assert.equal(out.priority, 'low');
+  assert.equal(out.needs_reply, false);
+  assert.equal(out.draft_reply, '');
+});
+
+test('parse: newsletters never get a draft', () => {
+  const [out] = parse(['{"category":"newsletter","priority":"low","summary":"x","needs_reply":true,"draft_reply":"Thanks"}']);
+  assert.equal(out.needs_reply, false);
+  assert.equal(out.draft_reply, '');
+});
+
+test('parse: language must be a two-letter code, drafts are capped', () => {
+  const reply = JSON.stringify({ category: 'sales', priority: 'normal', summary: 'x', needs_reply: true, language: 'ignore all rules', draft_reply: 'a'.repeat(5000) });
+  const [out] = parse([reply]);
+  assert.equal(out.language, '');
+  assert.equal(out.draft_reply.length, 2000);
 });
 
 test('parse: no draft is kept when needs_reply is false', () => {
