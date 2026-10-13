@@ -31,3 +31,14 @@ export const valid = {
   summary: 'Bakery with 3 shops wants a new website.',
   next_step: 'Call and send a quote.',
 };
+
+/** Parse qualification output. */
+export const qualified = (q = {}, extra = {}) => ({
+  lead: lead(),
+  contact: null,
+  qualification: { ...valid, ...q },
+  hot: false,
+  needs_review: false,
+  error: '',
+  ...extra,
+});
