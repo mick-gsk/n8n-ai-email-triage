@@ -1,3 +1,4 @@
+// @ts-check
 // n8n Code node "Parse AI result" (mode: run once for all items).
 // Turns the model's reply into a validated triage object. Anything malformed becomes
 // category "other" with needs_review = true, so no email is ever silently dropped.
@@ -11,6 +12,26 @@ const MAX_DRAFT_CHARS = 2000;
 // copied from the email or made up. Either way the draft is dropped and a human takes a look.
 const SUSPICIOUS_DRAFT = [/https?:\/\/|www\./i, /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}/];
 
+/**
+ * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
+ * @property {{ type: string, text?: string }[]} [content]
+ * @property {string} [text]
+ * @property {string | { message?: string }} [error]
+ *
+ * @typedef {{ id: string, threadId: string, from: string, subject: string, body: string }} Email
+ *
+ * @typedef {object} Triage
+ * @property {string} category one of CATEGORIES
+ * @property {string} priority one of PRIORITIES
+ * @property {string} summary
+ * @property {boolean} needs_reply
+ * @property {string} language ISO 639-1 code or ''
+ * @property {string} draft_reply '' unless needs_reply
+ * @property {boolean} needs_review
+ * @property {string} error why needs_review is set, or ''
+ */
+
+/** @param {string} text */
 function extractJson(text) {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -18,40 +39,56 @@ function extractJson(text) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
+/** @param {NonNullable<ClaudeResponse['error']>} error */
+function apiErrorMessage(error) {
+  return `API error: ${typeof error === 'string' ? error : (error.message ?? JSON.stringify(error))}`;
+}
+
+/**
+ * @param {ClaudeResponse} res
+ * @returns {Triage}
+ */
+function triage(res) {
+  // Ask Claude continues on error, so a failed request (after its retries) arrives here as
+  // { error } and ends up in the Review label with the reason in the log.
+  if (res.error) throw new Error(apiErrorMessage(res.error));
+  const reply = res.content?.map((c) => c.text ?? '').join('') ?? res.text ?? '';
+  const raw = extractJson(reply);
+
+  const problems = [];
+  if (!CATEGORIES.includes(raw.category)) problems.push(`category "${raw.category}"`);
+  if (!PRIORITIES.includes(raw.priority)) problems.push(`priority "${raw.priority}"`);
+  const category = CATEGORIES.includes(raw.category) ? raw.category : 'other';
+
+  let needsReply = raw.needs_reply === true && !NO_REPLY.includes(category);
+  if (needsReply && SUSPICIOUS_DRAFT.some((re) => re.test(String(raw.draft_reply ?? '')))) {
+    problems.push('draft_reply contains a link or account number');
+    needsReply = false;
+  }
+
+  return {
+    category,
+    priority: category === 'spam' ? 'low' : PRIORITIES.includes(raw.priority) ? raw.priority : 'normal',
+    summary: String(raw.summary ?? '').slice(0, 300),
+    needs_reply: needsReply,
+    language: /^[a-z]{2}$/.test(raw.language) ? raw.language : '',
+    draft_reply: needsReply ? String(raw.draft_reply ?? '').slice(0, MAX_DRAFT_CHARS) : '',
+    needs_review: problems.length > 0,
+    error: problems.length ? `invalid: ${problems.join(', ')}` : '',
+  };
+}
+
+const prepared = $('Prepare email').all();
+
+// @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return $input.all().map((item, i) => {
-  const email = $('Prepare email').all()[i].json.email;
-  const reply = item.json.content?.map((c) => c.text ?? '').join('') ?? item.json.text ?? '';
-  let triage;
+  const { email } = /** @type {{ email: Email }} */ (prepared[i].json);
+  /** @type {Triage} */
+  let result;
   try {
-    // Ask Claude continues on error, so a failed request (after its retries) arrives here as
-    // { error } and ends up in the Review label with the reason in the log.
-    const apiError = item.json.error;
-    if (apiError)
-      throw new Error(
-        `API error: ${typeof apiError === 'string' ? apiError : (apiError.message ?? JSON.stringify(apiError))}`,
-      );
-    const raw = extractJson(reply);
-    const problems = [];
-    if (!CATEGORIES.includes(raw.category)) problems.push(`category "${raw.category}"`);
-    if (!PRIORITIES.includes(raw.priority)) problems.push(`priority "${raw.priority}"`);
-    const category = CATEGORIES.includes(raw.category) ? raw.category : 'other';
-    let needsReply = raw.needs_reply === true && !NO_REPLY.includes(category);
-    if (needsReply && SUSPICIOUS_DRAFT.some((re) => re.test(String(raw.draft_reply ?? '')))) {
-      problems.push('draft_reply contains a link or account number');
-      needsReply = false;
-    }
-    triage = {
-      category,
-      priority: category === 'spam' ? 'low' : PRIORITIES.includes(raw.priority) ? raw.priority : 'normal',
-      summary: String(raw.summary ?? '').slice(0, 300),
-      needs_reply: needsReply,
-      language: /^[a-z]{2}$/.test(raw.language) ? raw.language : '',
-      draft_reply: needsReply ? String(raw.draft_reply ?? '').slice(0, MAX_DRAFT_CHARS) : '',
-      needs_review: problems.length > 0,
-      error: problems.length ? `invalid: ${problems.join(', ')}` : '',
-    };
+    result = triage(/** @type {ClaudeResponse} */ (item.json));
   } catch (err) {
-    triage = {
+    result = {
       category: 'other',
       priority: 'normal',
       summary: '',
@@ -59,8 +96,8 @@ return $input.all().map((item, i) => {
       language: '',
       draft_reply: '',
       needs_review: true,
-      error: String(err.message ?? err),
+      error: err instanceof Error ? err.message : String(err),
     };
   }
-  return { json: { ...email, ...triage, processedAt: new Date().toISOString() }, pairedItem: { item: i } };
+  return { json: { ...email, ...result, processedAt: new Date().toISOString() }, pairedItem: { item: i } };
 });

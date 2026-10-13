@@ -52,7 +52,8 @@ They cover email parsing (plain text, HTML, truncation), the request sent to Cla
 reply (wrapped JSON, unknown categories, API errors), and checks on `workflow.json` itself: every node
 reachable, every category has a label, the export in sync with `src/`, and no credentials included.
 
-`npm run lint` runs ESLint and Prettier. CI runs lint and tests on Node 20 and 22 and fails if
+`npm run lint` runs ESLint and Prettier, `npm run typecheck` checks the Code node sources with
+TypeScript (`// @ts-check` and JSDoc, no build step). CI runs all three on Node 20 and 22 and fails if
 `workflow.json` was edited by hand or not rebuilt after a change in `src/`.
 
 The workflow was also imported into n8n 1.123 and run end to end with mocked Gmail and Claude steps.
