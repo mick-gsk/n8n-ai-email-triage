@@ -59,10 +59,13 @@ const nodes = [
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ JSON.stringify($json.request) }}',
-    options: { batching: { batch: { batchSize: 5, batchInterval: 1000 } } },
+    options: { batching: { batch: { batchSize: 5, batchInterval: 1000 } }, timeout: 60000 },
   }, {
     credentials: { httpHeaderAuth: { id: '', name: 'Anthropic API key (x-api-key)' } },
-    retryOnFail: true, maxTries: 3, waitBetweenTries: 3000,
+    // n8n retries a node that continues on error only when its first output item is an error,
+    // and then re-runs the whole batch. Fixed waits only; 5 tries and 5 s are n8n's maximums.
+    // Whatever still fails reaches Parse AI result as { error } and is labelled for review.
+    retryOnFail: true, maxTries: 4, waitBetweenTries: 5000,
     onError: 'continueRegularOutput',
   }),
 

@@ -54,6 +54,13 @@ test('prepare: the prompt tells the model to treat the email as data', () => {
   assert.match(prompt, /not instructions to you/);
 });
 
+test('prepare: skips mail that already has a triage label', () => {
+  const labels = { support: 'Label_1', other: 'Label_9' };
+  const items = [{ ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_1'] }, { ...emails[1], labelIds: ['INBOX', 'UNREAD'] }];
+  const out = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, labels }] } });
+  assert.deepEqual(out.map((o) => o.email.id), ['18f0a2']);
+});
+
 test('prepare: truncates very long emails', () => {
   const long = [{ ...emails[0], text: 'x'.repeat(20000) }];
   const [out] = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
@@ -135,6 +142,14 @@ test('parse: language must be a two-letter code, drafts are capped', () => {
   const [out] = parse([reply]);
   assert.equal(out.language, '');
   assert.equal(out.draft_reply.length, 2000);
+});
+
+test('parse: a failed request after retries keeps the API error for the log', () => {
+  const [a, b] = parse([{ error: { message: '429 - rate_limit_error' } }, { error: 'timeout of 60000ms exceeded' }]);
+  assert.equal(a.error, 'API error: 429 - rate_limit_error');
+  assert.equal(b.error, 'API error: timeout of 60000ms exceeded');
+  assert.equal(a.category, 'other');
+  assert.equal(a.needs_review, true);
 });
 
 test('parse: no draft is kept when needs_reply is false', () => {

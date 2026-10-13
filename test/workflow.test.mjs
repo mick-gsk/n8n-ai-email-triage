@@ -13,6 +13,24 @@ test('workflow.json is in sync with src/ (run npm run build)', () => {
   assert.equal(settings.systemPrompt, readFileSync(new URL('../src/prompt.md', import.meta.url), 'utf8').trim());
 });
 
+test('Ask Claude retries, times out and hands failures on instead of stopping', () => {
+  const ask = byName['Ask Claude'];
+  assert.equal(ask.retryOnFail, true);
+  assert.ok(ask.maxTries >= 3 && ask.maxTries <= 5, 'n8n allows 2 to 5 tries');
+  assert.ok(ask.waitBetweenTries > 0 && ask.waitBetweenTries <= 5000, 'n8n caps the wait at 5000 ms');
+  assert.equal(ask.onError, 'continueRegularOutput', 'a failed email must still be labelled and logged');
+  assert.ok(ask.parameters.options.timeout > 0);
+  assert.ok(ask.parameters.options.batching.batch.batchSize > 0);
+});
+
+test('trigger only picks up unread inbox mail and processed mail is labelled', () => {
+  const { filters } = byName['Gmail Trigger'].parameters;
+  assert.equal(filters.readStatus, 'unread');
+  assert.deepEqual(filters.labelIds, ['INBOX']);
+  assert.equal(byName['Gmail Trigger'].parameters.simple, false, 'labelIds are needed to skip mail that was already processed');
+  assert.ok(workflow.connections['Parse AI result'].main[0].some((c) => c.node === 'Add Gmail label'));
+});
+
 test('every connection points to an existing node', () => {
   for (const [from, { main }] of Object.entries(workflow.connections)) {
     assert.ok(byName[from], `unknown source ${from}`);

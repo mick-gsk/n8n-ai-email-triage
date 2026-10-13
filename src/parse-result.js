@@ -23,6 +23,10 @@ return $input.all().map((item, i) => {
   const reply = item.json.content?.map((c) => c.text ?? '').join('') ?? item.json.text ?? '';
   let triage;
   try {
+    // Ask Claude continues on error, so a failed request (after its retries) arrives here as
+    // { error } and ends up in the Review label with the reason in the log.
+    const apiError = item.json.error;
+    if (apiError) throw new Error(`API error: ${typeof apiError === 'string' ? apiError : apiError.message ?? JSON.stringify(apiError)}`);
     const raw = extractJson(reply);
     const problems = [];
     if (!CATEGORIES.includes(raw.category)) problems.push(`category "${raw.category}"`);
