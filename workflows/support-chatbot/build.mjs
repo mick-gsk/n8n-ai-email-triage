@@ -1,5 +1,6 @@
-// Builds ingest.json from the sources in src/: Google Drive folder -> chunks with embeddings in
-// Postgres (pgvector), for the support chatbot to search.
+// Builds the two exports of the support chatbot from the sources in src/:
+//   ingest.json  Google Drive folder -> chunks with embeddings in Postgres (pgvector)
+//   chat.json    website chat -> Claude agent that answers from those chunks
 //
 //   node workflows/support-chatbot/build.mjs   (or npm run build for all workflows)
 import { credential, link, node, reader, workflow, writeWorkflow } from '../../lib/n8n.mjs';
@@ -10,12 +11,15 @@ const read = reader(import.meta.url);
 const FOLDER_ID = 'YOUR_DRIVE_FOLDER_ID';
 const TABLE = 'support_chunks';
 const EMBEDDING_MODEL = 'text-embedding-3-small';
+const CHAT_MODEL = 'claude-haiku-5-5';
 
 const drive = credential('googleDriveOAuth2Api', 'Google Drive account');
 const postgres = credential('postgres', 'Postgres (support bot)');
 const openAi = credential('openAiApi', 'OpenAI account');
 
 const ai = (type, ...targets) => ({ [type]: [targets.map((n) => ({ node: n, type, index: 0 }))] });
+
+// --- ingest.json -------------------------------------------------------------------------------
 
 const folder = { __rl: true, mode: 'id', value: FOLDER_ID };
 
@@ -165,3 +169,146 @@ writeWorkflow(
   'ingest.json',
   workflow('Support chatbot: ingest Drive documents', ingestNodes, ingestConnections),
 );
+
+// --- chat.json ---------------------------------------------------------------------------------
+
+const settings = {
+  maxMessageChars: 1000,
+  emptyMessage: 'Please type your question.',
+  tooLongMessage: 'That message is too long for this chat. Please shorten it and send it again.',
+  handoffMessage: 'I could not find an answer to that in our documentation. Please contact us at support@example.com.',
+};
+
+const routeRule = (route) => ({
+  conditions: {
+    options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+    conditions: [
+      {
+        id: `route-${route}`,
+        leftValue: '={{ $json.route }}',
+        rightValue: route,
+        operator: { type: 'string', operation: 'equals' },
+      },
+    ],
+    combinator: 'and',
+  },
+  renameOutput: true,
+  outputKey: route,
+});
+
+const chatNodes = [
+  node('Chat Trigger', '@n8n/n8n-nodes-langchain.chatTrigger', 1.5, [0, 300], {
+    parameters: {
+      public: true,
+      mode: 'webhook',
+      authentication: 'none',
+      options: {
+        allowedOrigins: 'https://www.example.com',
+        loadPreviousSession: 'notSupported',
+        responseMode: 'lastNode',
+      },
+    },
+  }),
+
+  node('Settings', 'n8n-nodes-base.set', 3.4, [220, 300], {
+    parameters: { mode: 'raw', jsonOutput: JSON.stringify(settings, null, 2), options: {} },
+  }),
+
+  node('Check message', 'n8n-nodes-base.code', 2, [660, 300], {
+    parameters: { jsCode: read('src/check-message.js') },
+  }),
+
+  node('Route', 'n8n-nodes-base.switch', 3.2, [880, 300], {
+    parameters: { rules: { values: ['answer', 'reply'].map(routeRule) }, options: {} },
+  }),
+
+  node('Support agent', '@n8n/n8n-nodes-langchain.agent', 3.1, [1120, 140], {
+    parameters: {
+      promptType: 'define',
+      text: '={{ $json.prompt }}',
+      options: {
+        systemMessage: read('src/system-prompt.md').trim(),
+        maxIterations: 5,
+        returnIntermediateSteps: true,
+      },
+    },
+    retryOnFail: true,
+    maxTries: 3,
+    waitBetweenTries: 3000,
+  }),
+
+  node('Claude', '@n8n/n8n-nodes-langchain.lmChatAnthropic', 1.6, [1000, 380], {
+    parameters: {
+      model: { __rl: true, mode: 'id', value: CHAT_MODEL },
+      options: { maxTokensToSample: 1024, thinkingMode: 'disabled' },
+    },
+    credentials: credential('anthropicApi', 'Anthropic account'),
+  }),
+
+  node('Chat memory', '@n8n/n8n-nodes-langchain.memoryPostgresChat', 1.4, [1140, 380], {
+    parameters: {
+      sessionIdType: 'customKey',
+      sessionKey: '={{ $json.sessionId }}',
+      tableName: 'support_chat_histories',
+      contextWindowLength: 6,
+    },
+    credentials: postgres,
+  }),
+
+  node('search_documents', '@n8n/n8n-nodes-langchain.vectorStorePGVector', 1.3, [1280, 380], {
+    parameters: {
+      mode: 'retrieve-as-tool',
+      toolDescription:
+        "Searches the company's support documents. Input: a short search query in the customer's language. " +
+        'Returns matching passages with their file_name.',
+      tableName: TABLE,
+      topK: 4,
+      includeDocumentMetadata: true,
+      options: {},
+    },
+    credentials: postgres,
+  }),
+
+  node('Query embeddings', '@n8n/n8n-nodes-langchain.embeddingsOpenAi', 1.2, [1280, 560], {
+    parameters: { model: EMBEDDING_MODEL, options: {} },
+    credentials: openAi,
+  }),
+
+  node('Check answer', 'n8n-nodes-base.code', 2, [1400, 140], {
+    parameters: { jsCode: read('src/check-answer.js') },
+  }),
+
+  // The Chat Trigger returns the last node's output to the browser, so the reply node keeps only
+  // the text; session id, reason and sources metadata stay server-side.
+  node('Reply', 'n8n-nodes-base.set', 3.4, [1620, 140], {
+    parameters: {
+      mode: 'manual',
+      assignments: {
+        assignments: [
+          {
+            id: 'output',
+            name: 'output',
+            type: 'string',
+            value: "={{ $json.route === 'handoff' ? $('Settings').first().json.handoffMessage : $json.output }}",
+          },
+        ],
+      },
+      options: {},
+    },
+  }),
+];
+
+const chatConnections = {
+  'Chat Trigger': link('Settings'),
+  Settings: link('Check message'),
+  'Check message': link('Route'),
+  Route: link('Support agent', 'Reply'),
+  'Support agent': link('Check answer'),
+  Claude: ai('ai_languageModel', 'Support agent'),
+  'Chat memory': ai('ai_memory', 'Support agent'),
+  search_documents: ai('ai_tool', 'Support agent'),
+  'Query embeddings': ai('ai_embedding', 'search_documents'),
+  'Check answer': link('Reply'),
+};
+
+writeWorkflow(import.meta.url, 'chat.json', workflow('Support chatbot: chat', chatNodes, chatConnections));

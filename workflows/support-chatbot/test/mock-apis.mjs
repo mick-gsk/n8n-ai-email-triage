@@ -1,5 +1,5 @@
-// Stand-in for the OpenAI embeddings API, used by test/n8n.cases.mjs.
-// Responses have the shape of the real API, so the n8n nodes parse them as they would in
+// Stand-ins for the OpenAI embeddings and Anthropic Messages APIs, used by test/n8n.cases.mjs.
+// Responses have the shape of the real APIs, so the n8n nodes parse them as they would in
 // production.
 
 export const DIMENSIONS = 1536;
@@ -39,4 +39,34 @@ export function embeddingsResponse(req) {
       usage: { prompt_tokens: 10 * inputs.length, total_tokens: 10 * inputs.length },
     },
   };
+}
+
+let messageCount = 0;
+const message = (content, stopReason) => ({
+  body: {
+    id: `msg_mock${String(++messageCount).padStart(4, '0')}`,
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-5-5',
+    content,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: { input_tokens: 900, output_tokens: 60 },
+  },
+});
+
+export const toolUse = (name, input) =>
+  message(
+    [{ type: 'tool_use', id: `toolu_mock${String(messageCount + 1).padStart(4, '0')}`, name, input }],
+    'tool_use',
+  );
+
+export const text = (t) => message([{ type: 'text', text: t }], 'end_turn');
+
+/** Text of the last tool_result in a Messages API request, or null if there is none yet. */
+export function lastToolResult(req) {
+  const blocks = req.body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+  const result = blocks.filter((b) => b.type === 'tool_result').at(-1);
+  if (!result) return null;
+  return typeof result.content === 'string' ? result.content : result.content.map((c) => c.text ?? '').join('');
 }
