@@ -4,6 +4,7 @@
 // The email is untrusted input: it goes into the request inside <email> tags as data, and any
 // tag that could close that block early is removed from it first.
 const MAX_CHARS = 6000;
+const MAX_HEADER_CHARS = 300;
 
 /**
  * @typedef {object} GmailMessage Gmail Trigger output with "Simplify" off (fields used here).
@@ -40,8 +41,8 @@ const messages = $('Gmail Trigger')
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return messages.map((m) => {
-  const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
-  const subject = m.subject ?? m.Subject ?? '';
+  const from = (m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '').slice(0, MAX_HEADER_CHARS);
+  const subject = (m.subject ?? m.Subject ?? '').slice(0, MAX_HEADER_CHARS);
   let body = m.text ?? m.textPlain ?? m.snippet ?? '';
   if (!body && m.html) body = htmlToText(m.html);
   body = body.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
@@ -63,6 +64,9 @@ return messages.map((m) => {
       request: {
         model: settings.model,
         max_tokens: 700,
+        // Haiku 5.5 thinks by default, and thinking tokens count against max_tokens. Sorting one
+        // email does not need it, and with it a long email could run out before the JSON.
+        thinking: { type: 'disabled' },
         system: settings.systemPrompt,
         messages: [{ role: 'user', content: userContent }],
       },

@@ -75,6 +75,19 @@ test('prepare: skips mail that already has a triage label', () => {
   );
 });
 
+test('prepare: turns off thinking so the reply fits in max_tokens', () => {
+  const [first] = prepare();
+  assert.deepEqual(first.request.thinking, { type: 'disabled' });
+  assert.equal(first.request.max_tokens, 700);
+});
+
+test('prepare: caps sender and subject length', () => {
+  const long = [{ ...emails[0], subject: 's'.repeat(5000), from: { text: 'f'.repeat(5000) } }];
+  const [out] = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
+  assert.equal(out.email.subject.length, 300);
+  assert.equal(out.email.from.length, 300);
+});
+
 test('prepare: truncates very long emails', () => {
   const long = [{ ...emails[0], text: 'x'.repeat(20000) }];
   const [out] = runCodeNode('prepare-email.js', { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
@@ -188,6 +201,17 @@ test('parse: a failed request after retries keeps the API error for the log', ()
   assert.equal(b.error, 'API error: timeout of 60000ms exceeded');
   assert.equal(a.category, 'other');
   assert.equal(a.needs_review, true);
+});
+
+test('parse: a reply cut off at max_tokens or a refusal goes to review', () => {
+  const valid = [{ type: 'text', text: '{"category":"sales","priority":"normal","summary":"x","needs_reply":false}' }];
+  const [a, b] = parse([
+    { stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"category":"sales","summary":"Asks for' }] },
+    { stop_reason: 'refusal', content: valid },
+  ]);
+  assert.equal(a.error, 'model reply cut off at max_tokens');
+  assert.equal(b.error, 'model declined to answer');
+  for (const out of [a, b]) assert.equal(out.needs_review, true);
 });
 
 test('parse: no draft is kept when needs_reply is false', () => {

@@ -34,7 +34,11 @@ everything to Google Sheets. Nothing is sent automatically; replies wait as draf
      label dropdown of any Gmail node)
    - `slackChannel` and `sheetId` (the sheet needs a tab named `Log` with the header row `processedAt, from, subject, category, priority, summary, needs_reply, needs_review, error`)
    - `model` if you want a different Claude model
-4. Run it once with **Execute workflow**, check the result, then activate it.
+4. Import `error-workflow.json` as well, select the Slack credential and channel in it, and pick it under
+   **Workflow settings → Error workflow** of the triage workflow. It posts the failed node, the error and a
+   link to the execution if the workflow stops (a Gmail, Slack or Sheets call failing, for example).
+   n8n assigns workflow IDs on import, so this link cannot be shipped in the export.
+5. Run it once with **Execute workflow**, check the result, then activate it.
 
 To use OpenAI or another provider instead, change the URL, header and request shape in **Ask Claude** and
 **Prepare email**; the rest of the workflow stays the same.
@@ -42,7 +46,7 @@ To use OpenAI or another provider instead, change the URL, header and request sh
 ## Tests
 
 The Code node logic and the prompt live in `src/` as normal files. `npm run build` writes them into
-`workflow.json`, and the tests run the same code outside n8n with mocked inputs:
+`workflow.json` and `error-workflow.json`, and the tests run the same code outside n8n with mocked inputs:
 
 ```bash
 npm test
@@ -69,9 +73,11 @@ priority accuracy, so prompt changes can be compared before going live.
 | Path | Purpose |
 |---|---|
 | `workflow.json` | the workflow to import (generated) |
+| `error-workflow.json` | error workflow that reports failed runs to Slack (generated) |
 | `src/prompt.md` | system prompt for Claude |
 | `src/prepare-email.js` | Code node: normalise email, build API request |
 | `src/parse-result.js` | Code node: validate the AI reply |
+| `src/format-error-alert.js` | Code node of the error workflow: build the Slack message |
 | `scripts/build-workflow.mjs` | builds `workflow.json` from `src/` |
 | `test/` | unit tests for the Code nodes and structural checks of the workflow |
 | `eval/` | labelled emails and an accuracy script |
