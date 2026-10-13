@@ -1,12 +1,13 @@
 // @ts-check
 // n8n Code node "Parse qualification" (mode: run once for all items).
 // Turns Claude's reply into a validated qualification. A failed call or a malformed reply sets
-// needs_review instead of dropping the lead, and leaves score and intent empty.
+// needs_review: the lead is still saved to HubSpot, without score or intent, for a human to check.
 // The reply is not trusted either: the form it was generated from may contain instructions aimed
 // at the model, so every field is checked or clamped here, whatever the model says.
 
 /**
  * @typedef {import('./validate-lead.js').Lead} Lead
+ * @typedef {import('./prepare-qualification.js').Contact} Contact
  *
  * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
  * @property {{ type: string, text?: string }[]} [content]
@@ -108,7 +109,7 @@ const prepared = $('Prepare qualification').all();
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return $input.all().map((item, i) => {
-  const { lead } = /** @type {{ lead: Lead }} */ (prepared[i].json);
+  const { lead, contact } = /** @type {{ lead: Lead, contact: Contact | null }} */ (prepared[i].json);
   /** @type {Qualification} */
   let qualification;
   let error = '';
@@ -123,7 +124,7 @@ return $input.all().map((item, i) => {
   const needsReview = error !== '';
   const hot = !needsReview && qualification.intent === 'buy' && Number(qualification.fit_score) >= settings.hotScore;
   return {
-    json: { lead, qualification, hot, needs_review: needsReview, error },
+    json: { lead, contact, qualification, hot, needs_review: needsReview, error },
     pairedItem: { item: i },
   };
 });

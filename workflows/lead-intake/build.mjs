@@ -30,7 +30,44 @@ const settings = {
     'Example: Web design agency for small businesses in Germany. Websites and online shops, ' +
     'typical projects from 5,000 to 30,000 EUR. No app development, no one-off logo work.',
   hotScore: 70,
+  hubspot: {
+    scoreProperty: 'ai_lead_score',
+    intentProperty: 'ai_lead_intent',
+    hotLifecycleStage: 'marketingqualifiedlead',
+  },
 };
+
+const hubspotAuth = {
+  authentication: 'predefinedCredentialType',
+  nodeCredentialType: 'hubspotAppToken',
+};
+const hubspotCredential = credential('hubspotAppToken', 'HubSpot private app token');
+
+// HubSpot answers 429 when the account's rate limit is hit and the search endpoint has a lower
+// limit than the rest, so failed calls are retried. A call that still fails stops the run: the
+// error workflow reports it, and the lead is in the execution data to re-run from.
+const hubspotRetry = { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 };
+
+const hubspotPost = (name, position, path, jsonBody) =>
+  node(name, 'n8n-nodes-base.httpRequest', 4.5, position, {
+    parameters: {
+      method: 'POST',
+      url: `https://api.hubapi.com${path}`,
+      ...hubspotAuth,
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody,
+      options: { timeout: 20000 },
+    },
+    credentials: hubspotCredential,
+    ...hubspotRetry,
+  });
+
+const searchBody = `={{ JSON.stringify({
+  filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: $json.lead.email }] }],
+  properties: ['email', 'firstname', 'lastname', 'company', 'lifecyclestage'],
+  limit: 1
+}) }}`;
 
 const nodes = [
   node('Lead webhook', 'n8n-nodes-base.webhook', 2.2, [0, 300], {
@@ -71,11 +108,13 @@ const nodes = [
     parameters: { errorMessage: '={{ $json.errors.join("; ") }}' },
   }),
 
-  node('Prepare qualification', 'n8n-nodes-base.code', 2, [1100, 280], {
+  hubspotPost('Find contact', [1100, 280], '/crm/v3/objects/contacts/search', searchBody),
+
+  node('Prepare qualification', 'n8n-nodes-base.code', 2, [1320, 280], {
     parameters: { jsCode: read('src/prepare-qualification.js') },
   }),
 
-  node('Ask Claude', 'n8n-nodes-base.httpRequest', 4.5, [1320, 280], {
+  node('Ask Claude', 'n8n-nodes-base.httpRequest', 4.5, [1540, 280], {
     parameters: {
       method: 'POST',
       url: 'https://api.anthropic.com/v1/messages',
@@ -90,18 +129,18 @@ const nodes = [
     },
     credentials: credential('httpHeaderAuth', 'Anthropic API key (x-api-key)'),
     // Whatever still fails after the retries reaches Parse qualification as { error }, and the
-    // lead is marked for review instead of being lost.
+    // lead is saved for review instead of being lost.
     retryOnFail: true,
     maxTries: 4,
     waitBetweenTries: 5000,
     onError: 'continueRegularOutput',
   }),
 
-  node('Parse qualification', 'n8n-nodes-base.code', 2, [1540, 280], {
+  node('Parse qualification', 'n8n-nodes-base.code', 2, [1760, 280], {
     parameters: { jsCode: read('src/parse-qualification.js') },
   }),
 
-  node('Spam?', 'n8n-nodes-base.if', 2.2, [1760, 280], {
+  node('Spam?', 'n8n-nodes-base.if', 2.2, [1980, 280], {
     parameters: ifCondition('spam', "={{ $json.qualification.intent === 'spam' && !$json.needs_review }}", '', {
       type: 'boolean',
       operation: 'true',
@@ -109,10 +148,18 @@ const nodes = [
     }),
   }),
 
-  node('Skip spam', 'n8n-nodes-base.noOp', 1, [1980, 120]),
+  node('Skip spam', 'n8n-nodes-base.noOp', 1, [2200, 120]),
 
-  // Qualified leads end here for now; the CRM comes next.
-  node('Qualified lead', 'n8n-nodes-base.noOp', 1, [1980, 320]),
+  node('Build contact', 'n8n-nodes-base.code', 2, [2200, 320], {
+    parameters: { jsCode: read('src/build-contact.js') },
+  }),
+
+  hubspotPost(
+    'Upsert contact',
+    [2420, 320],
+    '/crm/v3/objects/contacts/batch/upsert',
+    '={{ JSON.stringify($json.upsert) }}',
+  ),
 ];
 
 const connections = {
@@ -120,12 +167,14 @@ const connections = {
   Settings: link('Validate lead'),
   'Validate lead': link('Respond'),
   Respond: link('Accepted?'),
-  'Accepted?': link('Prepare qualification', 'Not configured?'),
+  'Accepted?': link('Find contact', 'Not configured?'),
   'Not configured?': link('Report missing secret', null),
+  'Find contact': link('Prepare qualification'),
   'Prepare qualification': link('Ask Claude'),
   'Ask Claude': link('Parse qualification'),
   'Parse qualification': link('Spam?'),
-  'Spam?': link('Skip spam', 'Qualified lead'),
+  'Spam?': link('Skip spam', 'Build contact'),
+  'Build contact': link('Upsert contact'),
 };
 
-writeWorkflow(import.meta.url, 'workflow.json', workflow('Website lead intake', nodes, connections));
+writeWorkflow(import.meta.url, 'workflow.json', workflow('Website lead intake (HubSpot + Claude)', nodes, connections));
