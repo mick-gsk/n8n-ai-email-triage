@@ -7,6 +7,7 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "types": [],
+    // n8n runs each Code node source on its own, so top-level names must not clash across files.
     "moduleDetection": "force"
   },
   "include": ["lib/n8n-globals.d.ts", "workflows/*/src/**/*.js", "shared/*/src/**/*.js"]
