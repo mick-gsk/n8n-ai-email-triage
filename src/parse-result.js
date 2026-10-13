@@ -26,7 +26,10 @@ return $input.all().map((item, i) => {
     // Ask Claude continues on error, so a failed request (after its retries) arrives here as
     // { error } and ends up in the Review label with the reason in the log.
     const apiError = item.json.error;
-    if (apiError) throw new Error(`API error: ${typeof apiError === 'string' ? apiError : apiError.message ?? JSON.stringify(apiError)}`);
+    if (apiError)
+      throw new Error(
+        `API error: ${typeof apiError === 'string' ? apiError : (apiError.message ?? JSON.stringify(apiError))}`,
+      );
     const raw = extractJson(reply);
     const problems = [];
     if (!CATEGORIES.includes(raw.category)) problems.push(`category "${raw.category}"`);
@@ -49,8 +52,14 @@ return $input.all().map((item, i) => {
     };
   } catch (err) {
     triage = {
-      category: 'other', priority: 'normal', summary: '', needs_reply: false, language: '',
-      draft_reply: '', needs_review: true, error: String(err.message ?? err),
+      category: 'other',
+      priority: 'normal',
+      summary: '',
+      needs_reply: false,
+      language: '',
+      draft_reply: '',
+      needs_review: true,
+      error: String(err.message ?? err),
     };
   }
   return { json: { ...email, ...triage, processedAt: new Date().toISOString() }, pairedItem: { item: i } };
