@@ -131,6 +131,13 @@ test('validate: a phone number needs at least one digit', () => {
     assert.equal(validate(post({ email: 'a@b.example', message: 'x', phone })).status, 'accepted', phone);
 });
 
+test('validate: website labels start and end with a letter or digit', () => {
+  for (const website of ['-example.com', 'example-.com', 'www.-x.example', 'https://a..example'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', website })).status, 'invalid', website);
+  for (const website of ['bakery-weber.example', 'https://www.a1.example:8080/path?q=1'])
+    assert.equal(validate(post({ email: 'a@b.example', message: 'x', website })).status, 'accepted', website);
+});
+
 test('validate: a body that is not an object gets 400', () => {
   for (const body of ['email=a@b.example', [], null, undefined]) {
     const out = validate(post(body));

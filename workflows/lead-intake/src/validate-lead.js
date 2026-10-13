@@ -48,7 +48,7 @@ const MAX_CHARS = {
 const MIN_SECRET_CHARS = 16;
 const EMAIL = /^[^\s@<>()[\]\\,;:"]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 const PHONE = /^(?=.*\d)[0-9+()./\s-]{5,40}$/;
-const WEBSITE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,63}(:\d+)?(\/\S*)?$/i;
+const WEBSITE = /^(https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(:\d+)?(\/\S*)?$/i;
 
 /**
  * Compares in time that depends only on the expected secret's length, so response times do not
