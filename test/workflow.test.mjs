@@ -77,3 +77,14 @@ test('Slack alert escapes email fields so they cannot ping the channel or add li
 test('Google Sheets writes values as text, not formulas', () => {
   assert.equal(byName['Log to Google Sheets'].parameters.options.cellFormat, 'RAW');
 });
+
+test('eval set is well formed and covers every category', () => {
+  const cases = JSON.parse(readFileSync(new URL('../eval/emails.json', import.meta.url), 'utf8'));
+  const settings = JSON.parse(byName.Settings.parameters.jsonOutput);
+  for (const c of cases) {
+    assert.ok(c.from && c.subject && c.body, `incomplete case: ${c.subject}`);
+    assert.ok(c.expected.category in settings.labels, `unknown category in "${c.subject}"`);
+    assert.ok(['high', 'normal', 'low'].includes(c.expected.priority), `unknown priority in "${c.subject}"`);
+  }
+  assert.deepEqual([...new Set(cases.map((c) => c.expected.category))].sort(), Object.keys(settings.labels).sort());
+});
