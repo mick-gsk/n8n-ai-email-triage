@@ -8,9 +8,45 @@ const CATEGORIES = ['support', 'sales', 'billing', 'partnership', 'job', 'newsle
 const PRIORITIES = ['high', 'normal', 'low'];
 const NO_REPLY = ['newsletter', 'spam'];
 const MAX_DRAFT_CHARS = 2000;
-// The model has no account numbers or links of its own, so if one shows up in a draft it was
+// The model has no links or bank details of its own, so if one shows up in a draft it was
 // copied from the email or made up. Either way the draft is dropped and a human takes a look.
-const SUSPICIOUS_DRAFT = [/https?:\/\/|www\./i, /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}/];
+// Links: a scheme with // (https://, ftp://), mailto:, tel:, sms:, data: or javascript: URIs,
+// www., or a domain followed by a path (evil.example/pay).
+const LINK =
+  /\b[a-z][a-z0-9+.-]*:\/\/|\b(?:mailto:[^\s@]+@|tel:\+?\d|sms:\+?\d|data:[a-z]+\/|javascript:)|\bwww\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\//i;
+// IBANs: country code and check digits, then letters and digits, in any case and with spaces,
+// dashes or dots between them. Such a run counts as an IBAN when it starts with 15 to 34 characters
+// that pass the IBAN checksum and hold at least 10 digits, so trailing words do not hide one and
+// an ordinary sentence that starts like one ("de12 thanks for order 4711") rarely matches.
+const IBAN_CANDIDATE = /\b[a-z]{2}\d{2}(?:[ .-]?[a-z0-9])+/gi;
+
+/** @param {string} iban letters and digits only, upper case */
+function passesChecksum(iban) {
+  let rest = 0;
+  for (const char of iban.slice(4) + iban.slice(0, 4)) {
+    const value = char <= '9' ? char : String(char.charCodeAt(0) - 55);
+    for (const digit of value) rest = (rest * 10 + Number(digit)) % 97;
+  }
+  return rest === 1;
+}
+
+/** @param {string} candidate */
+function containsIban(candidate) {
+  // Try the run up to the end of each group ("DE89", "DE893704", ...), since an IBAN ends where
+  // a group ends and the words after it are not part of it.
+  let iban = '';
+  for (const group of candidate.toUpperCase().split(/[ .-]/)) {
+    iban += group;
+    if (iban.length > 34) break;
+    if (iban.length >= 15 && (iban.match(/\d/g) ?? []).length >= 10 && passesChecksum(iban)) return true;
+  }
+  return false;
+}
+
+/** @param {string} text */
+function isSuspiciousDraft(text) {
+  return LINK.test(text) || [...text.matchAll(IBAN_CANDIDATE)].some((m) => containsIban(m[0]));
+}
 
 /**
  * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
@@ -64,8 +100,8 @@ function triage(res) {
   const category = CATEGORIES.includes(raw.category) ? raw.category : 'other';
 
   let needsReply = raw.needs_reply === true && !NO_REPLY.includes(category);
-  if (needsReply && SUSPICIOUS_DRAFT.some((re) => re.test(String(raw.draft_reply ?? '')))) {
-    problems.push('draft_reply contains a link or account number');
+  if (needsReply && isSuspiciousDraft(String(raw.draft_reply ?? ''))) {
+    problems.push('draft_reply contains a link or IBAN');
     needsReply = false;
   }
 

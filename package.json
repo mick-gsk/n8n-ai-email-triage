@@ -15,7 +15,7 @@
     "check:n8n": "node scripts/check-n8n.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",

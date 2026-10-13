@@ -42,6 +42,14 @@ export const cases = [
       assert.equal(drafts[0].sent.subject, 'Re: Checkout broken since this morning');
       assert.equal(drafts[0].sent.options.threadId, '18f0a1');
       assert.equal(run.out('Log to Google Sheets').length, 2);
+      const done = run.out('Mark as triaged');
+      assert.deepEqual(
+        done.map((d) => [d.sent.messageId, d.sent.labelIds]),
+        [
+          ['18f0a1', ['Label_TRIAGED']],
+          ['18f0a2', ['Label_TRIAGED']],
+        ],
+      );
     },
   },
   {

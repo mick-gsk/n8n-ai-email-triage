@@ -20,6 +20,9 @@ const settings = {
     spam: 'Label_SPAM',
     other: 'Label_REVIEW',
   },
+  // Added last, once labelling, alert, draft and log have all gone through. Mail that carries it
+  // is skipped, so a manual re-run does not create a second draft, alert or log row.
+  doneLabel: 'Label_TRIAGED',
   slackChannel: '#inbox-alerts',
   sheetId: 'YOUR_GOOGLE_SHEET_ID',
 };
@@ -156,6 +159,19 @@ const nodes = [
     },
     credentials: credential('googleSheetsOAuth2Api', 'Google Sheets account'),
   }),
+
+  // With execution order v1 the branches of Parse AI result run one after another, top to bottom,
+  // and a failing node stops the run. As the lowest branch this only runs when every branch above
+  // has succeeded, and it keeps working when an optional node such as the Sheets log is deleted.
+  node('Mark as triaged', 'n8n-nodes-base.gmail', 2.1, [1120, 800], {
+    parameters: {
+      resource: 'message',
+      operation: 'addLabels',
+      messageId: "={{ $('Parse AI result').item.json.id }}",
+      labelIds: "={{ [ $('Settings').first().json.doneLabel ] }}",
+    },
+    credentials: gmail,
+  }),
 ];
 
 const connections = {
@@ -163,7 +179,13 @@ const connections = {
   Settings: link('Prepare email'),
   'Prepare email': link('Ask Claude'),
   'Ask Claude': link('Parse AI result'),
-  'Parse AI result': link(['Add Gmail label', 'High priority?', 'Needs reply?', 'Log to Google Sheets']),
+  'Parse AI result': link([
+    'Add Gmail label',
+    'High priority?',
+    'Needs reply?',
+    'Log to Google Sheets',
+    'Mark as triaged',
+  ]),
   'High priority?': link('Alert on Slack', null),
   'Needs reply?': link('Create reply draft', null),
 };

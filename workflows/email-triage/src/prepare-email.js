@@ -20,7 +20,7 @@ const MAX_HEADER_CHARS = 300;
  * @property {string} [From] simplified output
  * @property {string} [Subject] simplified output
  *
- * @typedef {{ model: string, systemPrompt: string, labels?: Record<string, string> }} Settings
+ * @typedef {{ model: string, systemPrompt: string, doneLabel?: string }} Settings
  */
 
 /** @param {unknown} s */
@@ -29,20 +29,36 @@ const stripDelimiters = (s) => String(s).replace(/<\/?\s*(email|from|subject|bod
 /** @param {string} html */
 const htmlToText = (html) => html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ');
 
+/**
+ * Sorting one email does not need thinking, and thinking tokens count against max_tokens, so a
+ * long email could run out before the JSON. Models differ in how thinking is turned off: Haiku
+ * accepts "disabled", Sonnet 5.5 only "between_tools", and Opus 5.5 or Fable reject both with a
+ * 400. For those the field is left out and max_tokens is raised to leave room for thinking.
+ * @param {string} model
+ * @returns {{ thinking?: { type: string }, max_tokens: number }}
+ */
+function thinkingOptions(model) {
+  if (model.startsWith('claude-haiku')) return { thinking: { type: 'disabled' }, max_tokens: 700 };
+  if (model.startsWith('claude-sonnet-5-5')) return { thinking: { type: 'between_tools' }, max_tokens: 700 };
+  return { max_tokens: 4000 };
+}
+
 const settings = /** @type {Settings} */ ($('Settings').first().json);
 // In production the trigger only returns mail received since the last poll. A manual
-// "Execute workflow" run fetches the newest unread email again, though, so mail that already
-// carries one of our labels is skipped instead of getting a second draft, alert and log row.
-const triageLabels = new Set(Object.values(settings.labels ?? {}));
+// "Execute workflow" run fetches the newest unread email again, though, so mail that was fully
+// processed before (it carries doneLabel) is skipped instead of getting a second draft, alert and
+// log row. A category label alone does not count: a run can fail after labelling, and a re-run
+// then has to do the rest.
 const messages = $('Gmail Trigger')
   .all()
   .map((item) => /** @type {GmailMessage} */ (item.json))
-  .filter((m) => !(m.labelIds ?? []).some((id) => triageLabels.has(id)));
+  .filter((m) => !settings.doneLabel || !(m.labelIds ?? []).includes(settings.doneLabel));
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return messages.map((m) => {
-  const from = (m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '').slice(0, MAX_HEADER_CHARS);
-  const subject = (m.subject ?? m.Subject ?? '').slice(0, MAX_HEADER_CHARS);
+  // Kept whole for the draft, Slack and the log; only the copy in the prompt is shortened.
+  const from = m.from?.value?.[0]?.address ?? m.from?.text ?? m.From ?? '';
+  const subject = m.subject ?? m.Subject ?? '';
   let body = m.text ?? m.textPlain ?? m.snippet ?? '';
   if (!body && m.html) body = htmlToText(m.html);
   body = body.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
@@ -50,8 +66,8 @@ return messages.map((m) => {
   const email = { id: m.id, threadId: m.threadId, from, subject, body };
   const userContent = [
     '<email>',
-    `<from>${stripDelimiters(from)}</from>`,
-    `<subject>${stripDelimiters(subject)}</subject>`,
+    `<from>${stripDelimiters(from.slice(0, MAX_HEADER_CHARS))}</from>`,
+    `<subject>${stripDelimiters(subject.slice(0, MAX_HEADER_CHARS))}</subject>`,
     `<body>${stripDelimiters(body)}</body>`,
     '</email>',
     '',
@@ -63,10 +79,7 @@ return messages.map((m) => {
       email,
       request: {
         model: settings.model,
-        max_tokens: 700,
-        // Haiku 5.5 thinks by default, and thinking tokens count against max_tokens. Sorting one
-        // email does not need it, and with it a long email could run out before the JSON.
-        thinking: { type: 'disabled' },
+        ...thinkingOptions(settings.model),
         system: settings.systemPrompt,
         messages: [{ role: 'user', content: userContent }],
       },

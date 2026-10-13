@@ -62,14 +62,14 @@ test('prepare: the prompt tells the model to treat the email as data', () => {
   assert.match(prompt, /not instructions to you/);
 });
 
-test('prepare: skips mail that already has a triage label', () => {
-  const labels = { support: 'Label_1', other: 'Label_9' };
+test('prepare: skips mail that was fully processed before', () => {
   const items = [
-    { ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_1'] },
-    { ...emails[1], labelIds: ['INBOX', 'UNREAD'] },
+    { ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_SUPPORT', 'Label_DONE'] },
+    // Labelled, but the run failed before the end: a re-run has to finish it.
+    { ...emails[1], labelIds: ['INBOX', 'UNREAD', 'Label_SUPPORT'] },
   ];
   const out = runCodeNode(src('prepare-email.js'), {
-    nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, labels }] },
+    nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, doneLabel: 'Label_DONE' }] },
   });
   assert.deepEqual(
     out.map((o) => o.email.id),
@@ -83,11 +83,27 @@ test('prepare: turns off thinking so the reply fits in max_tokens', () => {
   assert.equal(first.request.max_tokens, 700);
 });
 
-test('prepare: caps sender and subject length', () => {
+test('prepare: only sends a thinking setting the configured model accepts', () => {
+  const requestFor = (model) =>
+    runCodeNode(src('prepare-email.js'), {
+      nodes: { 'Gmail Trigger': [emails[0]], Settings: [{ ...settings, model }] },
+    })[0].request;
+  assert.deepEqual(requestFor('claude-sonnet-5-5').thinking, { type: 'between_tools' });
+  for (const model of ['claude-opus-5-5', 'claude-fable-5-1']) {
+    const request = requestFor(model);
+    assert.equal('thinking' in request, false, model);
+    assert.ok(request.max_tokens > 700, model);
+  }
+});
+
+test('prepare: caps sender and subject in the prompt but keeps them whole for the draft and log', () => {
   const long = [{ ...emails[0], subject: 's'.repeat(5000), from: { text: 'f'.repeat(5000) } }];
   const [out] = runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': long, Settings: [settings] } });
-  assert.equal(out.email.subject.length, 300);
-  assert.equal(out.email.from.length, 300);
+  assert.equal(out.email.subject.length, 5000);
+  assert.equal(out.email.from.length, 5000);
+  const prompt = out.request.messages[0].content;
+  assert.match(prompt, /<subject>s{300}<\/subject>/);
+  assert.match(prompt, /<from>f{300}<\/from>/);
 });
 
 test('prepare: truncates very long emails', () => {
@@ -157,7 +173,7 @@ test('parse: a reply that followed injected instructions is clamped', () => {
   assert.equal(out.needs_reply, false);
   assert.equal(out.draft_reply, '');
   assert.equal(out.needs_review, true);
-  assert.match(out.error, /draft_reply contains a link or account number/);
+  assert.match(out.error, /draft_reply contains a link or IBAN/);
 });
 
 test('parse: links in drafts are dropped', () => {
@@ -166,6 +182,59 @@ test('parse: links in drafts are dropped', () => {
   const [out] = parse([reply]);
   assert.equal(out.draft_reply, '');
   assert.equal(out.needs_review, true);
+});
+
+test('parse: IBANs are caught in any case and with any separator', () => {
+  for (const iban of [
+    'de89 3704 0044 0532 0130 00',
+    'DE89-3704-0044-0532-0130-00',
+    'DE89370400440532013000',
+    'gb82.west.1234.5698.7654.32',
+    'DE89 3704 0044 0532 0130 00 invoice 2',
+    'KW12CBKUA123456789012345678901',
+    'NO9386011117947',
+  ]) {
+    const draft = `Please pay to ${iban}, thanks.`;
+    const [out] = parse([
+      JSON.stringify({ category: 'billing', priority: 'normal', summary: 'x', needs_reply: true, draft_reply: draft }),
+    ]);
+    assert.equal(out.draft_reply, '', iban);
+    assert.equal(out.needs_review, true, iban);
+  }
+});
+
+test('parse: links without https are caught too', () => {
+  for (const link of [
+    'ftp://evil.example',
+    'evil.example/pay',
+    'WWW.evil.example',
+    'mailto:billing@evil.example',
+    'tel:+491701234567',
+    'data:text/html,hi',
+    'javascript:alert(1)',
+  ]) {
+    const [out] = parse([
+      JSON.stringify({
+        category: 'support',
+        priority: 'normal',
+        summary: 'x',
+        needs_reply: true,
+        draft_reply: `Go to ${link} now.`,
+      }),
+    ]);
+    assert.equal(out.draft_reply, '', link);
+  }
+});
+
+test('parse: ordinary drafts are not mistaken for links or IBANs', () => {
+  const draft =
+    'Hi Anna, de12 thanks for your order 4711 from 03.10.2026, e.g. the blue one. Your data: attached as discussed. ' +
+    'Call us on +49 170 1234567 or note: it ships on Monday. Ref DE12 2024 0001 1234 5678 is your order number.';
+  const [out] = parse([
+    JSON.stringify({ category: 'sales', priority: 'normal', summary: 'x', needs_reply: true, draft_reply: draft }),
+  ]);
+  assert.equal(out.draft_reply, draft);
+  assert.equal(out.needs_review, false);
 });
 
 test('parse: spam is always low priority and never gets a draft', () => {
