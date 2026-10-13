@@ -35,10 +35,10 @@ test('every chunk is stored with file id, file name and source URL', () => {
       values.some((m) => m.name === key),
       key,
     );
-  // A sub-node resolves expressions against the first item, so the metadata must come from the
-  // one file the loop is processing.
+  // A sub-node resolves expressions against the first item; the loop makes that the current file,
+  // and the paired item of Select files leads to it.
   for (const m of values.filter((m) => m.name !== 'ingest_run'))
-    assert.equal(m.value, `={{ $('Loop over files').item.json.${m.name} }}`, m.name);
+    assert.equal(m.value, `={{ $('Select files').item.json.${m.name} }}`, m.name);
   assert.deepEqual(linked(ingest, 'Document loader', 'ai_document'), ['Store chunks']);
   assert.deepEqual(linked(ingest, 'Text splitter', 'ai_textSplitter'), ['Document loader']);
 });
@@ -62,7 +62,7 @@ test('re-ingesting a file removes its older chunks, after the new ones are store
   assert.match(remove.parameters.query, /GREATEST\(\$2::bigint, max\(run\)\)/);
   assert.equal(
     remove.parameters.options.queryReplacement,
-    "={{ [ $('Loop over files').item.json.file_id, String($execution.id) ] }}",
+    "={{ [ $('Select files').item.json.file_id, String($execution.id) ] }}",
   );
   assert.equal(remove.executeOnce, true);
   assert.equal(ingest.byName['Store chunks'].alwaysOutputData, true, 'an emptied file must still lose its old chunks');

@@ -256,15 +256,15 @@
             "metadataValues": [
               {
                 "name": "file_id",
-                "value": "={{ $('Loop over files').item.json.file_id }}"
+                "value": "={{ $('Select files').item.json.file_id }}"
               },
               {
                 "name": "file_name",
-                "value": "={{ $('Loop over files').item.json.file_name }}"
+                "value": "={{ $('Select files').item.json.file_name }}"
               },
               {
                 "name": "source_url",
-                "value": "={{ $('Loop over files').item.json.source_url }}"
+                "value": "={{ $('Select files').item.json.source_url }}"
               },
               {
                 "name": "ingest_run",
@@ -303,7 +303,7 @@
         "operation": "executeQuery",
         "query": "WITH chunks AS (\n  SELECT id, CASE WHEN metadata ->> 'ingest_run' ~ '^[0-9]+$' THEN (metadata ->> 'ingest_run')::bigint END AS run\n  FROM support_chunks\n  WHERE metadata ->> 'file_id' = $1\n), newest AS (\n  SELECT GREATEST($2::bigint, max(run)) AS run FROM chunks\n), removed AS (\n  DELETE FROM support_chunks t\n  USING chunks c, newest n\n  WHERE t.id = c.id AND (c.run IS NULL OR c.run < n.run)\n  RETURNING 1\n)\nSELECT count(*)::int AS removed_chunks FROM removed",
         "options": {
-          "queryReplacement": "={{ [ $('Loop over files').item.json.file_id, String($execution.id) ] }}"
+          "queryReplacement": "={{ [ $('Select files').item.json.file_id, String($execution.id) ] }}"
         }
       },
       "credentials": {

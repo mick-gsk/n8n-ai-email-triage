@@ -143,10 +143,12 @@ const ingestNodes = [
       textSplittingMode: 'custom',
       options: {
         metadata: {
+          // Through the paired item of Select files; $('Loop over files').item stays empty in
+          // this sub-node (n8n 2.43). With one file per pass, item 0 is that file.
           metadataValues: [
-            { name: 'file_id', value: "={{ $('Loop over files').item.json.file_id }}" },
-            { name: 'file_name', value: "={{ $('Loop over files').item.json.file_name }}" },
-            { name: 'source_url', value: "={{ $('Loop over files').item.json.source_url }}" },
+            { name: 'file_id', value: "={{ $('Select files').item.json.file_id }}" },
+            { name: 'file_name', value: "={{ $('Select files').item.json.file_name }}" },
+            { name: 'source_url', value: "={{ $('Select files').item.json.source_url }}" },
             { name: 'ingest_run', value: '={{ $execution.id }}' },
           ],
         },
@@ -163,7 +165,7 @@ const ingestNodes = [
       operation: 'executeQuery',
       query: removeOldChunks,
       options: {
-        queryReplacement: "={{ [ $('Loop over files').item.json.file_id, String($execution.id) ] }}",
+        queryReplacement: "={{ [ $('Select files').item.json.file_id, String($execution.id) ] }}",
       },
     },
     credentials: postgres,
