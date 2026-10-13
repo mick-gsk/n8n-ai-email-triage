@@ -56,7 +56,8 @@ things:
 3. The cases in `workflows/*/test/n8n.cases.mjs` run with `n8n execute`. For a run, the trigger emits
    the case's test input, HTTP calls and AI credentials go to a local mock server, and nodes that
    need a real account (Gmail, Slack, Sheets, CRMs) are replaced by nodes that record what they would
-   have sent. Code, If, Switch, Merge, HTTP Request and AI nodes run as exported. Workflows that need
+   have sent. Respond to Webhook is recorded the same way, since it only runs behind a real Webhook
+   trigger. Code, If, Switch, Merge, HTTP Request and AI nodes run as exported. Workflows that need
    a database get a real one: a cases file can list service containers (pgvector, for example) that
    are started next to n8n for its cases.
 

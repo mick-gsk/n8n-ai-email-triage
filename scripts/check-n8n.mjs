@@ -11,7 +11,8 @@
 //         answers with the case's responses and records every request;
 //       - nodes that need any other account (Gmail, Slack, Sheets, ...) become Set nodes that
 //         evaluate the node's expressions and pass them on under `sent`, so a case can check
-//         what would have been sent;
+//         what would have been sent. Respond to Webhook is recorded the same way, since it fails
+//         without the real Webhook trigger;
 //       - nodes listed in a case's `stubs` return fixed items instead (an item's `$binary` becomes
 //         its binary data, for nodes that download files).
 //     Everything else (Code, If, Switch, Merge, AI agents, ...) runs as exported.
@@ -73,18 +74,21 @@ const RUNS_AS_IS = new Set([
   'n8n-nodes-base.httpRequest',
   'n8n-nodes-base.executeWorkflow',
   'n8n-nodes-base.executeWorkflowTrigger',
-  'n8n-nodes-base.respondToWebhook',
   'n8n-nodes-base.extractFromFile',
   'n8n-nodes-base.convertToFile',
   'n8n-nodes-base.stopAndError',
   'n8n-nodes-base.stickyNote',
 ]);
 
+// Nodes without credentials that are recorded like the account nodes (see above).
+const RECORDED = new Set(['n8n-nodes-base.respondToWebhook']);
+
 // Credentials the check can fill with test values that point at the mock server.
 const mockCredentials = (base) => ({
   httpHeaderAuth: { name: 'x-api-key', value: 'test-key' },
   anthropicApi: { apiKey: 'test-key', url: `${base}/api.anthropic.com` },
   openAiApi: { apiKey: 'test-key', url: `${base}/api.openai.com/v1` },
+  hubspotAppToken: { appToken: 'test-token' },
 });
 
 const docker = async (args, { input } = {}) => {
@@ -235,7 +239,7 @@ function prepare(wf, testCase, ids, base, credentialData) {
     const creds = Object.keys(n.credentials ?? {});
     if (creds.length && creds.every((t) => t in credentialData))
       return { ...n, credentials: Object.fromEntries(creds.map((t) => [t, ids.credential(t)])) };
-    if (!creds.length || RUNS_AS_IS.has(n.type)) return n;
+    if ((!creds.length && !RECORDED.has(n.type)) || RUNS_AS_IS.has(n.type)) return n;
     // One Set node that evaluates all of the node's expressions with their real types.
     const sent = expressions(n.parameters)
       .map(([path, expr]) => `${JSON.stringify(path)}: ${toJs(expr)}`)
