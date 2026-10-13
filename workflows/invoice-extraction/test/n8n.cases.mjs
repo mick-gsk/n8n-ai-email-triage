@@ -53,7 +53,23 @@ export const cases = [
       assert.equal(result.status, 'ok');
       assert.equal(result.file_name, 'RE-2026-0042.pdf');
       assert.equal(result.invoice_number, 'RE-2026-0042');
+      assert.equal(result.invoice_date, '2026-10-02');
+      assert.equal(result.due_date, '2026-10-16');
+      assert.equal(result.gross_amount, 1487.5);
       assert.equal(result.message_id, '19a0f1');
+    },
+  },
+  {
+    name: 'totals that do not add up go to review',
+    ...withInvoice,
+    http: {
+      'POST api.anthropic.com/v1/messages': () =>
+        claudeSays({ ...extractions.germanInvoice, gross_amount: '1.478,50' }),
+    },
+    check(run, assert) {
+      const [result] = run.out('Collect results');
+      assert.equal(result.status, 'review');
+      assert.deepEqual(result.reasons, ['net 1250.00 + VAT 237.50 = 1487.50, but gross is 1478.50']);
     },
   },
   {

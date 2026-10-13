@@ -12,6 +12,7 @@ const settings = {
   effort: 'low',
   systemPrompt: read('src/prompt.md').trim(),
   outputSchema: JSON.parse(read('src/schema.json')),
+  dateOrder: 'DMY',
   maxPdfMB: 10,
   minImageKB: 20,
   processedLabelId: 'Label_INVOICE_DONE',
