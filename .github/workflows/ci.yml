@@ -20,7 +20,9 @@ jobs:
       - name: workflow exports match src/
         run: |
           npm run build
-          git diff --exit-code -- "*.json"
+          # status, not diff, so a new export that was never committed fails too
+          changes=$(git status --porcelain -- '*.json')
+          if [ -n "$changes" ]; then echo "$changes"; git diff; exit 1; fi
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test

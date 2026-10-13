@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node --test \"test/*.test.mjs\" \"shared/*/test/*.test.mjs\" \"workflows/*/test/*.test.mjs\"",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs shared/*/test/*.test.mjs workflows/*/test/*.test.mjs",
     "lint": "eslint . && prettier --check \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
     "format": "prettier --write \"lib/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" \"workflows/**/*.{js,mjs,ts}\" \"shared/**/*.{js,mjs,ts}\" eslint.config.js",
     "typecheck": "tsc -p .",
