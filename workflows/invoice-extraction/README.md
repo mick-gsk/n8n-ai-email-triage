@@ -51,7 +51,7 @@ What Validate checks:
 | Dates | `2.10.2026`, `02.10.26`, `2026-10-02`, `2. Oktober 2026`, `Oct 2, 2026` and similar to ISO. Slash dates follow `dateOrder` unless one part is above 12. Payment terms in days become a due date. Due date before invoice date, or an invoice date in the future, goes to review. |
 | IBAN | Length per SEPA country and mod-97 checksum. |
 | VAT ID | Format for the EU countries plus CH, GB, NO and Northern Ireland; check digit for German IDs. IDs from other countries are not checked. |
-| Required fields | Supplier name, invoice number (not for receipts), invoice date, currency as ISO code. |
+| Required fields | Supplier name, invoice number (not for receipts), invoice date, currency as a current ISO 4217 code. `€`, `£`, `US$`, `SFr` and `Fr.` are converted; symbols shared by several currencies (`$`, `kr`, `¥`) are not and go to review. |
 | Uncertain fields | Fields Claude reports as unreadable (blurred, cut off, handwritten) go to review. |
 
 ## Setup (about 30 minutes)

@@ -300,9 +300,14 @@ describe('Validate', () => {
       assert.deepEqual(inv.reasons, ['supplier name missing', 'invoice number missing']);
     });
 
-    test('currency symbols become ISO codes; anything else goes to review', () => {
+    test('unambiguous currency symbols become ISO codes; anything else goes to review', () => {
       assert.equal(german({ currency: '€' }).currency, 'EUR');
-      assert.match(german({ currency: 'Euro' }).reasons.join(), /currency "EURO" is not an ISO code/);
+      assert.equal(german({ currency: 'US$' }).currency, 'USD');
+      assert.deepEqual(german({ currency: 'chf' }).reasons, []);
+      for (const c of ['Euro', '$', 'kr', '¥', 'XYZ']) {
+        const inv = german({ currency: c });
+        assert.deepEqual(inv.reasons, [`currency "${c.toUpperCase()}" is not an ISO 4217 code`], c);
+      }
     });
 
     test('an unknown document type goes to review', () => {

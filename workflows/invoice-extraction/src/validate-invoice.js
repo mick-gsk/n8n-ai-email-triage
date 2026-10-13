@@ -25,7 +25,23 @@ const MONTHS = [
   'nov november',
   'dec december dez dezember',
 ].map((names) => names.split(' '));
-const CURRENCY_SYMBOLS = { '€': 'EUR', $: 'USD', '£': 'GBP', SFR: 'CHF', 'FR.': 'CHF' };
+// Symbols that name one currency. "$", "kr", "¥" and the like are used by several currencies and
+// are not mapped; the document then goes to review unless the model gave an ISO code.
+const CURRENCY_SYMBOLS = { '€': 'EUR', '£': 'GBP', US$: 'USD', SFR: 'CHF', 'FR.': 'CHF' };
+// Current ISO 4217 currency codes (no funds codes, precious metals or test codes).
+const CURRENCIES = new Set(
+  (
+    'AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD ' +
+    'CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF ' +
+    'GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK ' +
+    'LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD ' +
+    'OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN ' +
+    'SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XCG ' +
+    'XOF XPF YER ZAR ZMW ZWG ' +
+    // Replaced recently (Bulgaria joined the euro in 2026, XCG replaced ANG in 2025); older invoices use them.
+    'BGN ANG'
+  ).split(' '),
+);
 // IBAN length per SEPA country.
 const IBAN_LENGTHS = Object.fromEntries(
   'AT20 BE16 BG22 CH21 CY28 CZ24 DE22 DK18 EE20 ES24 FI18 FR27 GB22 GR27 HR21 HU28 IE22 IS26 IT27 LI21 LT20 LU20 LV21 MC27 MT31 NL18 NO15 PL28 PT25 RO24 SE24 SI19 SK24'
@@ -343,7 +359,7 @@ function validate(raw, settings, now) {
   if (inv.due_date && inv.invoice_date && inv.due_date < inv.invoice_date)
     reasons.push(`due date ${inv.due_date} is before invoice date ${inv.invoice_date}`);
 
-  if (!/^[A-Z]{3}$/.test(inv.currency)) reasons.push(`currency "${inv.currency}" is not an ISO code`);
+  if (!CURRENCIES.has(inv.currency)) reasons.push(`currency "${inv.currency}" is not an ISO 4217 code`);
 
   // Credit notes are stored with negative amounts, whichever way the document prints them.
   if (type === 'credit_note' && inv.gross_amount !== null && inv.gross_amount > 0) {
