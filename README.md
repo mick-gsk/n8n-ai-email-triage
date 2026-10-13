@@ -1,7 +1,7 @@
 # n8n AI workflows
 
-Importable n8n workflows for small-business automation, each with an AI step that is validated
-before anything is written, sent or stored. Every workflow is generated from source files,
+Importable n8n workflows for small-business automation. Where a workflow has an AI step, its output
+is validated before anything is written, sent or stored. Every workflow is generated from source files,
 unit-tested, and run in a real n8n instance before it is committed.
 
 | Workflow | What it does | Services |
@@ -10,6 +10,7 @@ unit-tested, and run in a real n8n instance before it is committed.
 | [Support chatbot](workflows/support-chatbot) | Website chat that answers from your Google Drive documents with sources, hands off to Slack when it cannot | Google Drive, OpenAI embeddings, Postgres (pgvector), Anthropic, Slack |
 | [Lead intake](workflows/lead-intake) | Takes website form leads by webhook, scores them with Claude, upserts the contact and a note in HubSpot, alerts Slack on hot leads | Webhook, Anthropic, HubSpot, Slack |
 | [Invoice extraction](workflows/invoice-extraction) | Reads invoice and receipt attachments with Claude, checks totals, IBAN, VAT ID and duplicates, files them in Sheets and Drive, sends the rest to review | Gmail, Anthropic, Google Sheets, Google Drive, Slack |
+| [E-Rechnung](workflows/e-rechnung) | Reads German e-invoices (XRechnung XML, ZUGFeRD / Factur-X PDF) from Gmail without AI, checks totals, VAT breakdown, IBAN and duplicates, writes them to Sheets and Drive, sends the rest to review | Gmail, Google Sheets, Google Drive, Slack |
 | [Error alert](shared/error-alert) | Error workflow for all of the above: posts failed runs to Slack with a link to the execution | Slack |
 
 Each folder has its own README with setup steps, configuration, design decisions and limits.
