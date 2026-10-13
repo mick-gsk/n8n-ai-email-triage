@@ -75,8 +75,9 @@ tries, polling every minute.
 - Emails are untrusted input. The email goes to Claude inside `<email>` tags with any such tags removed
   from its text, and the prompt says instructions in it are not to be followed. The parser does not rely
   on that: it only accepts known categories and priorities, forces spam to low priority, never drafts for
-  spam or newsletters, and drops any draft that contains a URL or IBAN, since the model has neither unless
-  the email put it there. Sender, subject and summary are escaped in Slack (no `<!channel>` pings) and
+  spam or newsletters, and drops any draft that contains a link (anything with a scheme such as
+  `https://`, `www.`, or a domain followed by a path) or an IBAN-shaped number, since the model has
+  neither unless the email put it there. Sender, subject and summary are escaped in Slack (no `<!channel>` pings) and
   written to Sheets as plain values (no formulas).
 - Failures are visible. A failed Claude call becomes a Review item with the API error in the log. Any
   other failure (expired token, wrong label ID) stops the run and the error workflow reports it.
@@ -84,9 +85,10 @@ tries, polling every minute.
 ## Running in production
 
 - Cost: input per email is at most about 8,200 characters (1,500 prompt, 600 sender and subject, 6,000
-  body) and output at most 700 tokens. Even at a pessimistic 2 characters per token that is under 4,200
-  input tokens, so at Haiku 5.5 list prices ($0.10 / $0.50 per million tokens, October 2026) one email
-  costs at most about $0.0008. Most emails are far shorter.
+  body) and output at most 700 tokens. At about 2 characters per token, which is conservative for
+  English and German, that is around 4,200 input tokens, so at Haiku 5.5 list prices ($0.10 / $0.50 per
+  million tokens, October 2026) one email costs roughly $0.0008. This is an estimate, not a cap: text
+  full of unusual characters takes more tokens. Most emails are far shorter.
 - Rate limits: Claude calls go out in batches of 5 per second. A large backlog on first activation is
   not a problem because the trigger only fetches mail received after activation.
 - Data: execution logs contain the email text. Set `EXECUTIONS_DATA_SAVE_ON_SUCCESS=none` or prune with
@@ -107,8 +109,9 @@ tries, polling every minute.
   done label, but repeats the steps that had already gone through, so a Slack alert or draft can
   appear twice.
 - Attachments are ignored and only the first 6,000 characters of the body are read.
-- Prompt injection is mitigated, not ruled out: an email can still nudge category or priority. What it
-  cannot do is get a link or account number into a draft, or reach Slack or Sheets unescaped.
+- Prompt injection is mitigated, not ruled out: an email can still nudge category or priority. The draft
+  check catches the link and IBAN shapes above; a bare domain (`evil.example`) or another kind of
+  account number gets through. Escaping keeps it from pinging Slack or running formulas in Sheets.
 
 ## Tests
 
