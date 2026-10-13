@@ -1,6 +1,6 @@
 // Runs of ingest.json and chat.json in a real n8n instance (npm run check:n8n) against a real
-// Postgres with pgvector. Google Drive is replaced by nodes that return fixed files; OpenAI
-// embeddings and Claude are answered by test/mock-apis.mjs.
+// Postgres with pgvector. Google Drive and Slack are replaced by nodes that return fixed files or
+// record what they would send; OpenAI embeddings and Claude are answered by test/mock-apis.mjs.
 // The cases share the database and run in order: the chat cases search the chunks stored by the
 // ingest cases.
 import { readFileSync } from 'node:fs';
@@ -17,7 +17,15 @@ export const services = {
     env: { POSTGRES_PASSWORD: 'check' },
     port: 5432,
     ready: ['pg_isready', '-h', '127.0.0.1', '-U', 'postgres'],
-    setup: [{ cmd: psql, input: read('../src/setup.sql') }],
+    setup: [
+      { cmd: psql, input: read('../src/setup.sql') },
+      // A session that sent 25 messages five minutes ago, for the rate limit case.
+      {
+        cmd: psql,
+        input:
+          "INSERT INTO support_chat_requests (session_id, created_at) SELECT 'flood-session', now() - interval '5 minutes' FROM generate_series(1, 25);",
+      },
+    ],
     credentials: ({ host, port }) => ({
       postgres: { host, port, database: 'postgres', user: 'postgres', password: 'check', ssl: 'disable' },
     }),
@@ -121,6 +129,7 @@ export const cases = [
       assert.equal(claude[0].body.tools[0].name, 'search_documents');
       assert.match(lastToolResult(claude[1]), /refund-policy\.md/);
 
+      assert.deepEqual(run.out('Count requests'), [{ session_recent: 1, all_recent: 1 }]);
       assert.deepEqual(run.out('Reply'), [
         {
           output:
@@ -128,6 +137,7 @@ export const cases = [
             '\n\nSources: [refund-policy.md](https://drive.google.com/file/d/1RefundPolicy/view)',
         },
       ]);
+      assert.equal(run.ran('Notify team on Slack'), false);
       const memory = await sql(
         run,
         "SELECT string_agg(message->>'type', ',' ORDER BY id) FROM support_chat_histories WHERE session_id = 'sess-answer'",
@@ -136,19 +146,65 @@ export const cases = [
     },
   },
   {
-    name: 'chat: a question the documents do not answer gets the contact address, not a guess',
+    name: 'chat: a question the documents do not answer goes to the team on Slack',
     workflow: 'chat.json',
     trigger: 'Chat Trigger',
-    input: chat('sess-handoff', 'Do you offer gift wrapping?'),
+    input: chat('sess-handoff', 'Do you offer gift wrapping? <!channel>'),
     http: claudeAnswering('gift wrap', 'unused'),
     check(run, assert) {
       assert.equal(toClaude(run).length, 2);
-      assert.equal(run.out('Check answer')[0].route, 'handoff');
-      assert.deepEqual(run.out('Reply'), [
-        {
-          output: 'I could not find an answer to that in our documentation. Please contact us at support@example.com.',
-        },
-      ]);
+      const [slack] = run.out('Notify team on Slack');
+      assert.equal(slack.sent._node, 'n8n-nodes-base.slack');
+      assert.match(slack.sent.text, /needs a person: the documents do not cover this question/);
+      assert.match(slack.sent.text, /Session: sess-handoff/);
+      assert.match(slack.sent.text, /gift wrapping\? &lt;!channel&gt;/, 'customer text is escaped for Slack');
+      assert.match(run.out('Handoff reply')[0].output, /passed your question on to our team/);
+      assert.deepEqual(Object.keys(run.out('Handoff reply')[0]), ['output']);
+      assert.equal(run.ran('Reply'), false);
+    },
+  },
+  {
+    name: 'chat: asking for a person skips the agent',
+    workflow: 'chat.json',
+    trigger: 'Chat Trigger',
+    input: chat('sess-human', 'Can I talk to a human please?'),
+    http: claudeAnswering('x', 'unused'),
+    check(run, assert) {
+      assert.equal(toClaude(run).length, 0);
+      assert.match(run.out('Notify team on Slack')[0].sent.text, /customer asked for a person/);
+      assert.equal(run.out('Handoff reply').length, 1);
+    },
+  },
+  {
+    name: 'chat: a failed Claude call becomes a handoff, not an error page',
+    workflow: 'chat.json',
+    trigger: 'Chat Trigger',
+    input: chat('sess-error', 'Where do you ship to?'),
+    http: {
+      ...embeddings,
+      'POST api.anthropic.com/v1/messages': () => ({
+        status: 400,
+        body: { type: 'error', error: { type: 'invalid_request_error', message: 'mock: bad request' } },
+      }),
+    },
+    check(run, assert) {
+      assert.ok(toClaude(run).length >= 1);
+      assert.match(run.out('Check answer')[0].reason, /^agent error: /);
+      assert.equal(run.out('Notify team on Slack').length, 1);
+      assert.equal(run.out('Handoff reply').length, 1);
+    },
+  },
+  {
+    name: 'chat: a session over the rate limit gets a fixed reply without a model call',
+    workflow: 'chat.json',
+    trigger: 'Chat Trigger',
+    input: chat('flood-session', 'Where do you ship to?'),
+    http: claudeAnswering('x', 'unused'),
+    check(run, assert) {
+      assert.equal(toClaude(run).length, 0);
+      assert.equal(run.out('Count requests')[0].session_recent, 26);
+      assert.equal(run.out('Check message')[0].reason, 'rate limit');
+      assert.match(run.out('Reply')[0].output, /wait a few minutes/);
     },
   },
   {
@@ -160,6 +216,7 @@ export const cases = [
     check(run, assert) {
       assert.equal(toClaude(run).length, 0);
       assert.match(run.out('Reply')[0].output, /too long/);
+      assert.equal(run.ran('Notify team on Slack'), false);
     },
   },
   {
