@@ -46,7 +46,8 @@ flowchart LR
 ```
 
 1. Chat Trigger receives the message from the website widget (or any client that posts to its URL).
-2. Count requests records the message for the rate limit. Check message rejects empty or over-long
+2. Count requests records the message for the rate limit (under a lock, so a burst of parallel
+   messages is counted one after another). Check message rejects empty or over-long
    messages and sessions over the limit with a fixed reply, and sends explicit requests for a person
    straight to the team. Everything else goes to the agent.
 3. Support agent (Claude Haiku 5.5) searches the documents with the `search_documents` tool and

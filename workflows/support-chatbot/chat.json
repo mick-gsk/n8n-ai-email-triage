@@ -47,10 +47,10 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO support_chat_requests (session_id) VALUES ($1);\nDELETE FROM support_chat_requests WHERE created_at < now() - interval '1 day';\nSELECT\n  (SELECT count(*) FROM support_chat_requests WHERE session_id = $1 AND created_at > now() - interval '10 minutes')::int AS session_recent,\n  (SELECT count(*) FROM support_chat_requests WHERE created_at > now() - interval '1 minute')::int AS all_recent",
+        "query": "INSERT INTO support_chat_requests (session_id)\n  SELECT $1 FROM (SELECT pg_advisory_xact_lock(hashtext('support_chat_requests'))) AS serialized;\nDELETE FROM support_chat_requests WHERE created_at < now() - interval '1 day';\nSELECT\n  (SELECT count(*) FROM support_chat_requests WHERE session_id = $1 AND created_at > now() - interval '10 minutes')::int AS session_recent,\n  (SELECT count(*) FROM support_chat_requests WHERE created_at > now() - interval '1 minute')::int AS all_recent",
         "options": {
-          "queryReplacement": "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').slice(0, 100) ] }}",
-          "queryBatching": "independently"
+          "queryReplacement": "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').replace(/[\\u0000-\\u0008\\u000b-\\u001f\\u007f]/g, ' ').trim().slice(0, 100) ] }}",
+          "queryBatching": "transaction"
         }
       },
       "credentials": {

@@ -208,7 +208,11 @@ const settings = {
     'You can also reach us at support@example.com.',
 };
 
-const countRequests = `INSERT INTO support_chat_requests (session_id) VALUES ($1);
+// The advisory lock makes concurrent messages count one after another; without it, a burst of
+// messages could all count before any of them is inserted and all pass the limit. The lock is
+// held until the node's transaction ends, after the counts.
+const countRequests = `INSERT INTO support_chat_requests (session_id)
+  SELECT $1 FROM (SELECT pg_advisory_xact_lock(hashtext('support_chat_requests'))) AS serialized;
 DELETE FROM support_chat_requests WHERE created_at < now() - interval '1 day';
 SELECT
   (SELECT count(*) FROM support_chat_requests WHERE session_id = $1 AND created_at > now() - interval '10 minutes')::int AS session_recent,
@@ -254,8 +258,10 @@ const chatNodes = [
       operation: 'executeQuery',
       query: countRequests,
       options: {
-        queryReplacement: "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').slice(0, 100) ] }}",
-        queryBatching: 'independently',
+        // The same cleaning as in Check message, so variants of one session id share a counter.
+        queryReplacement:
+          "={{ [ String($('Chat Trigger').first().json.sessionId ?? '').replace(/[\\u0000-\\u0008\\u000b-\\u001f\\u007f]/g, ' ').trim().slice(0, 100) ] }}",
+        queryBatching: 'transaction',
       },
     },
     credentials: postgres,

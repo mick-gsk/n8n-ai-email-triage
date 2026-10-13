@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
+import { runCodeNode } from '../../../lib/run-code-node.mjs';
+
 const load = (file) => {
   const wf = JSON.parse(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'));
   return { wf, byName: Object.fromEntries(wf.nodes.map((n) => [n.name, n])) };
@@ -73,6 +75,24 @@ test('the full sync lists sizes and forgets every chunk when the folder is empty
   const forget = ingest.byName['Forget removed files'];
   assert.match(forget.parameters.options.queryReplacement, /\.filter\(Boolean\)/, 'the empty item adds no id');
   assert.equal(forget.executeOnce, true);
+});
+
+test('the rate limit counts under a lock, with the session id cleaned like Check message does', () => {
+  const count = chat.byName['Count requests'];
+  assert.match(count.parameters.query, /^INSERT INTO support_chat_requests[\s\S]*pg_advisory_xact_lock/);
+  assert.equal(count.parameters.options.queryBatching, 'transaction', 'the lock is held until the counts are done');
+  const expr = count.parameters.options.queryReplacement.slice(4, -3);
+  const keyFor = (sessionId) =>
+    new Function('$', `return ${expr};`)(() => ({ first: () => ({ json: { sessionId } }) }))[0];
+  const settings = JSON.parse(chat.byName.Settings.parameters.jsonOutput);
+  for (const sessionId of ['abc', '  abc\u0000 ', 'a\u001bb\t', 's'.repeat(500), undefined]) {
+    const [checked] = runCodeNode(new URL('../src/check-message.js', import.meta.url), {
+      input: [{ session_recent: 1, all_recent: 1 }],
+      nodes: { Settings: [settings], 'Chat Trigger': [{ sessionId, chatInput: 'hi' }] },
+    });
+    assert.equal(keyFor(sessionId), checked.sessionId, JSON.stringify(sessionId));
+  }
+  assert.equal(keyFor('  abc\u0000 '), 'abc');
 });
 
 test('ingest and chat use the same table and embedding model, and the table matches setup.sql', () => {
