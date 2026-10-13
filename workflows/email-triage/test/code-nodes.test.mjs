@@ -83,6 +83,19 @@ test('prepare: turns off thinking so the reply fits in max_tokens', () => {
   assert.equal(first.request.max_tokens, 700);
 });
 
+test('prepare: only sends a thinking setting the configured model accepts', () => {
+  const requestFor = (model) =>
+    runCodeNode(src('prepare-email.js'), {
+      nodes: { 'Gmail Trigger': [emails[0]], Settings: [{ ...settings, model }] },
+    })[0].request;
+  assert.deepEqual(requestFor('claude-sonnet-5-5').thinking, { type: 'between_tools' });
+  for (const model of ['claude-opus-5-5', 'claude-fable-5-1']) {
+    const request = requestFor(model);
+    assert.equal('thinking' in request, false, model);
+    assert.ok(request.max_tokens > 700, model);
+  }
+});
+
 test('prepare: caps sender and subject in the prompt but keeps them whole for the draft and log', () => {
   const long = [{ ...emails[0], subject: 's'.repeat(5000), from: { text: 'f'.repeat(5000) } }];
   const [out] = runCodeNode(src('prepare-email.js'), { nodes: { 'Gmail Trigger': long, Settings: [settings] } });

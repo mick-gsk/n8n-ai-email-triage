@@ -29,6 +29,20 @@ const stripDelimiters = (s) => String(s).replace(/<\/?\s*(email|from|subject|bod
 /** @param {string} html */
 const htmlToText = (html) => html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ');
 
+/**
+ * Sorting one email does not need thinking, and thinking tokens count against max_tokens, so a
+ * long email could run out before the JSON. Models differ in how thinking is turned off: Haiku
+ * accepts "disabled", Sonnet 5.5 only "between_tools", and Opus 5.5 or Fable reject both with a
+ * 400. For those the field is left out and max_tokens is raised to leave room for thinking.
+ * @param {string} model
+ * @returns {{ thinking?: { type: string }, max_tokens: number }}
+ */
+function thinkingOptions(model) {
+  if (model.startsWith('claude-haiku')) return { thinking: { type: 'disabled' }, max_tokens: 700 };
+  if (model.startsWith('claude-sonnet-5-5')) return { thinking: { type: 'between_tools' }, max_tokens: 700 };
+  return { max_tokens: 4000 };
+}
+
 const settings = /** @type {Settings} */ ($('Settings').first().json);
 // In production the trigger only returns mail received since the last poll. A manual
 // "Execute workflow" run fetches the newest unread email again, though, so mail that was fully
@@ -65,10 +79,7 @@ return messages.map((m) => {
       email,
       request: {
         model: settings.model,
-        max_tokens: 700,
-        // Haiku 5.5 thinks by default, and thinking tokens count against max_tokens. Sorting one
-        // email does not need it, and with it a long email could run out before the JSON.
-        thinking: { type: 'disabled' },
+        ...thinkingOptions(settings.model),
         system: settings.systemPrompt,
         messages: [{ role: 'user', content: userContent }],
       },

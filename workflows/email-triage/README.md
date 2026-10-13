@@ -56,7 +56,7 @@ Settings node:
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | `claude-haiku-5-5` | The request turns thinking off, which Haiku 5.5 accepts. For Opus 5.5 or Sonnet 5.5, remove `thinking` in `src/prepare-email.js` and raise `max_tokens`. |
+| `model` | `claude-haiku-5-5` | Thinking is turned off for Haiku and Sonnet 5.5. Opus 5.5 and Fable do not allow that, so for them the request leaves thinking at the model's default and allows 4,000 output tokens instead of 700. |
 | `labels` | placeholders | Gmail label ID per category; `other` is the review label. |
 | `doneLabel` | placeholder | Gmail label ID added once an email is fully processed, e.g. a label `Triaged`. |
 | `slackChannel` | `#inbox-alerts` | Channel for high-priority mail. |
@@ -64,8 +64,9 @@ Settings node:
 | `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so tests and eval use the same text. |
 
 Set in the code (`src/`, `build.mjs`): body limit 6,000 characters, sender and subject cut to 300
-in the prompt (draft, Slack and log get them whole), `max_tokens` 700, drafts capped at 2,000 characters, Claude calls batched 5 per second with a 60 s
-timeout and up to 4 tries, polling every minute.
+in the prompt (draft, Slack and log get them whole), `max_tokens` 700 (4,000 when thinking stays on),
+drafts capped at 2,000 characters, Claude calls batched 5 per second with a 60 s timeout and up to 4
+tries, polling every minute.
 
 ## Design decisions
 
