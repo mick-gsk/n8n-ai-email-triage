@@ -43,3 +43,19 @@ test('no real credentials are stored in the export', () => {
   for (const n of workflow.nodes) for (const c of Object.values(n.credentials ?? {})) assert.equal(c.id, '');
   assert.doesNotMatch(JSON.stringify(workflow), /sk-ant-|sk-[A-Za-z0-9]{20}|xox[bp]-/);
 });
+
+// Evaluates an n8n expression string ("=...{{ js }}...") for one item, enough for simple templates.
+const render = (expr, json) => expr.slice(1).replace(/\{\{([\s\S]+?)\}\}/g, (_, js) => new Function('$json', `return (${js});`)(json));
+
+test('Slack alert escapes email fields so they cannot ping the channel or add links', () => {
+  const text = render(byName['Alert on Slack'].parameters.text, {
+    category: 'support', from: 'x@example.com', subject: '<!channel> urgent', summary: 'Click <https://evil.example|here> & pay',
+  });
+  assert.doesNotMatch(text, /<!channel>|<https:/);
+  assert.match(text, /&lt;!channel&gt; urgent/);
+  assert.match(text, /&amp; pay/);
+});
+
+test('Google Sheets writes values as text, not formulas', () => {
+  assert.equal(byName['Log to Google Sheets'].parameters.options.cellFormat, 'RAW');
+});

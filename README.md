@@ -1,5 +1,7 @@
 # AI Email Triage for n8n (Gmail + Claude)
 
+[![CI](https://github.com/mick-gsk/n8n-ai-email-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/mick-gsk/n8n-ai-email-triage/actions/workflows/ci.yml)
+
 An n8n workflow that reads every new Gmail message, lets Claude sort it, and then acts on it:
 it labels the email, alerts Slack when something is urgent, prepares a reply draft, and logs
 everything to Google Sheets. Nothing is sent automatically; replies wait as drafts for a human.
@@ -49,6 +51,9 @@ npm test
 They cover email parsing (plain text, HTML, truncation), the request sent to Claude, validation of the AI
 reply (wrapped JSON, unknown categories, API errors), and checks on `workflow.json` itself: every node
 reachable, every category has a label, the export in sync with `src/`, and no credentials included.
+
+CI runs the tests on Node 20 and 22 and fails if `workflow.json` was edited by hand or not rebuilt
+after a change in `src/`.
 
 The workflow was also imported into n8n 1.123 and run end to end with mocked Gmail and Claude steps.
 

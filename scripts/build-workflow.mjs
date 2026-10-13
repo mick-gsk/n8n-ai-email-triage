@@ -27,6 +27,10 @@ const node = (name, type, typeVersion, position, parameters, extra = {}) => ({
   name, type, typeVersion, position, parameters, ...extra,
 });
 
+// Sender, subject and summary come from outside. Slack treats <!channel>, <!here> and <url|text>
+// in message text as mentions and links, so &, < and > are escaped as its docs require.
+const slackSafe = (field) => `{{ String($json.${field}).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}`;
+
 const nodes = [
   node('Gmail Trigger', 'n8n-nodes-base.gmailTrigger', 1.2, [0, 300], {
     pollTimes: { item: [{ mode: 'everyMinute' }] },
@@ -90,7 +94,7 @@ const nodes = [
     operation: 'post',
     select: 'channel',
     channelId: { __rl: true, mode: 'name', value: "={{ $('Settings').first().json.slackChannel }}" },
-    text: '=:rotating_light: *{{ $json.category }}* from {{ $json.from }}\n*{{ $json.subject }}*\n{{ $json.summary }}',
+    text: `=:rotating_light: *{{ $json.category }}* from ${slackSafe('from')}\n*${slackSafe('subject')}*\n${slackSafe('summary')}`,
     otherOptions: {},
   }, { credentials: { slackApi: { id: '', name: 'Slack account' } } }),
 
@@ -130,7 +134,8 @@ const nodes = [
       schema: ['processedAt', 'from', 'subject', 'category', 'priority', 'summary', 'needs_reply', 'needs_review', 'error']
         .map((id) => ({ id, displayName: id, required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: true })),
     },
-    options: {},
+    // RAW: a subject like =IMPORTXML(...) is stored as text instead of being run as a formula.
+    options: { cellFormat: 'RAW' },
   }, { credentials: { googleSheetsOAuth2Api: { id: '', name: 'Google Sheets account' } } }),
 ];
 
