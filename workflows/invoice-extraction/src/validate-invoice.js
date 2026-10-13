@@ -1,7 +1,8 @@
 // @ts-check
 // n8n Code node "Validate" (mode: run once for all items).
 // Turns Claude's reply into a normalised invoice record and checks it: dates to ISO, amounts to
-// numbers, net + VAT = gross, VAT lines against their rates, due date not before the invoice date. Every problem is collected as a reason and the item gets
+// numbers, net + VAT = gross, VAT lines against their rates, IBAN checksum, VAT ID format, due
+// date not before the invoice date. Every problem is collected as a reason and the item gets
 // status "review"; only a record without any reason is written to the sheet as "ok".
 // The reply is not trusted: the document it was read from may contain text aimed at the model.
 const TOLERANCE = 0.02;
@@ -24,6 +25,45 @@ const MONTHS = [
   'dec december dez dezember',
 ].map((names) => names.split(' '));
 const CURRENCY_SYMBOLS = { '€': 'EUR', $: 'USD', '£': 'GBP', SFR: 'CHF', 'FR.': 'CHF' };
+// IBAN length per SEPA country.
+const IBAN_LENGTHS = Object.fromEntries(
+  'AT20 BE16 BG22 CH21 CY28 CZ24 DE22 DK18 EE20 ES24 FI18 FR27 GB22 GR27 HR21 HU28 IE22 IS26 IT27 LI21 LT20 LU20 LV21 MC27 MT31 NL18 NO15 PL28 PT25 RO24 SE24 SI19 SK24'
+    .split(' ')
+    .map((s) => [s.slice(0, 2), Number(s.slice(2))]),
+);
+const VAT_ID_FORMATS = {
+  AT: /^ATU\d{8}$/,
+  BE: /^BE[01]\d{9}$/,
+  BG: /^BG\d{9,10}$/,
+  CH: /^CHE\d{9}(MWST|TVA|IVA)?$/,
+  CY: /^CY\d{8}[A-Z]$/,
+  CZ: /^CZ\d{8,10}$/,
+  DE: /^DE\d{9}$/,
+  DK: /^DK\d{8}$/,
+  EE: /^EE\d{9}$/,
+  EL: /^EL\d{9}$/,
+  ES: /^ES[A-Z0-9]\d{7}[A-Z0-9]$/,
+  FI: /^FI\d{8}$/,
+  FR: /^FR[A-HJ-NP-Z0-9]{2}\d{9}$/,
+  GB: /^GB(\d{9}|\d{12}|GD\d{3}|HA\d{3})$/,
+  HR: /^HR\d{11}$/,
+  HU: /^HU\d{8}$/,
+  IE: /^IE(\d{7}[A-W][A-I]?|\d[A-Z+*]\d{5}[A-W])$/,
+  IT: /^IT\d{11}$/,
+  LT: /^LT(\d{9}|\d{12})$/,
+  LU: /^LU\d{8}$/,
+  LV: /^LV\d{11}$/,
+  MT: /^MT\d{8}$/,
+  NL: /^NL\d{9}B\d{2}$/,
+  NO: /^NO\d{9}(MVA)?$/,
+  PL: /^PL\d{10}$/,
+  PT: /^PT\d{9}$/,
+  RO: /^RO\d{2,10}$/,
+  SE: /^SE\d{12}$/,
+  SI: /^SI\d{8}$/,
+  SK: /^SK\d{10}$/,
+  XI: /^XI(\d{9}|\d{12})$/,
+};
 
 /**
  * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
@@ -39,7 +79,7 @@ const CURRENCY_SYMBOLS = { '€': 'EUR', $: 'USD', '£': 'GBP', SFR: 'CHF', 'FR.
  * @property {string[]} reasons why the status is not "ok"
  * @property {string} document_type
  * @property {string} supplier_name
- * @property {string} supplier_vat_id
+ * @property {string} supplier_vat_id normalised, e.g. DE123456789
  * @property {string} invoice_number
  * @property {string} invoice_date YYYY-MM-DD or ''
  * @property {string} due_date YYYY-MM-DD or ''
@@ -48,7 +88,7 @@ const CURRENCY_SYMBOLS = { '€': 'EUR', $: 'USD', '£': 'GBP', SFR: 'CHF', 'FR.
  * @property {number | null} vat_amount
  * @property {number | null} gross_amount
  * @property {{ rate: number | null, net: number | null, vat: number | null }[]} vat_lines
- * @property {string} iban
+ * @property {string} iban normalised, without spaces
  * @property {{ description: string, quantity: string, unit_price: string, amount: number | null }[]} line_items
  */
 
@@ -138,6 +178,45 @@ function parseDate(raw, order) {
   return date.toISOString().slice(0, 10);
 }
 
+/** @param {string} iban normalised */
+function ibanValid(iban) {
+  const country = iban.slice(0, 2);
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(iban)) return false;
+  if (IBAN_LENGTHS[country] && iban.length !== IBAN_LENGTHS[country]) return false;
+  if (iban.length < 15 || iban.length > 34) return false;
+  const digits = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => String(c.charCodeAt(0) - 55));
+  let rest = 0;
+  for (const c of digits) rest = (rest * 10 + Number(c)) % 97;
+  return rest === 1;
+}
+
+/**
+ * German VAT IDs carry a check digit (ISO 7064, MOD 11,10).
+ * @param {string} id normalised, DE + 9 digits
+ */
+function germanVatIdValid(id) {
+  const digits = id.slice(2).split('').map(Number);
+  let product = 10;
+  for (const digit of digits.slice(0, 8)) {
+    const sum = (digit + product) % 10 || 10;
+    product = (2 * sum) % 11;
+  }
+  return (11 - product) % 10 === digits[8];
+}
+
+/**
+ * @param {string} id normalised
+ * @returns {string} problem, or '' if the format is fine or the country is not one we know
+ */
+function vatIdProblem(id) {
+  const country = /** @type {keyof VAT_ID_FORMATS} */ (id.slice(0, 2));
+  if (!/^[A-Z]{2}/.test(id)) return `VAT ID "${id}" does not start with a country code`;
+  const format = VAT_ID_FORMATS[country];
+  if (format && !format.test(id)) return `VAT ID "${id}" does not match the ${country} format`;
+  if (country === 'DE' && !germanVatIdValid(id)) return `VAT ID "${id}" has a wrong check digit`;
+  return '';
+}
+
 /** @param {unknown} raw */
 function currencyCode(raw) {
   const s = text(raw, 10).toUpperCase();
@@ -208,7 +287,9 @@ function validate(raw, settings, now) {
     reasons,
     document_type: type,
     supplier_name: text(raw.supplier_name),
-    supplier_vat_id: text(raw.supplier_vat_id, 40),
+    supplier_vat_id: text(raw.supplier_vat_id, 40)
+      .toUpperCase()
+      .replace(/[\s.\-/]/g, ''),
     invoice_number: text(raw.invoice_number, 60),
     invoice_date: date('invoice date', raw.invoice_date),
     due_date: date('due date', raw.due_date),
@@ -221,7 +302,7 @@ function validate(raw, settings, now) {
       net: amount(`VAT line ${i + 1} net`, l?.net),
       vat: amount(`VAT line ${i + 1} VAT`, l?.vat),
     })),
-    iban: text(raw.iban, 50),
+    iban: text(raw.iban, 50).toUpperCase().replace(/[\s-]/g, ''),
     line_items: lineItems.map((/** @type {any} */ l, /** @type {number} */ i) => ({
       description: text(l?.description, 300),
       quantity: text(l?.quantity, 20),
@@ -291,6 +372,12 @@ function validate(raw, settings, now) {
     reasons.push(`VAT lines add up to ${fmt(lineSum('vat'))}, but VAT total is ${fmt(vat)}`);
   if (inv.vat_lines.length && net !== null && Math.abs(lineSum('net') - net) > TOLERANCE)
     reasons.push(`VAT lines add up to net ${fmt(lineSum('net'))}, but net total is ${fmt(net)}`);
+
+  if (inv.iban && !ibanValid(inv.iban)) reasons.push(`IBAN ${inv.iban} is not valid`);
+  if (inv.supplier_vat_id) {
+    const problem = vatIdProblem(inv.supplier_vat_id);
+    if (problem) reasons.push(problem);
+  }
 
   return { ...inv, status: reasons.length ? 'review' : 'ok' };
 }
