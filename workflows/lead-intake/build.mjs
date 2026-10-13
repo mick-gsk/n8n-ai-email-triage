@@ -1,8 +1,8 @@
-// Builds workflow.json from the sources in src/, so the Code node logic lives in normal files that
-// can be reviewed and tested.
+// Builds workflow.json from the sources in src/, so the Code node logic and the prompt live in
+// normal files that can be reviewed and tested.
 //
 //   node workflows/lead-intake/build.mjs   (or npm run build for all workflows)
-import { ifCondition, link, node, reader, workflow, writeWorkflow } from '../../lib/n8n.mjs';
+import { credential, ifCondition, link, node, reader, workflow, writeWorkflow } from '../../lib/n8n.mjs';
 
 const read = reader(import.meta.url);
 
@@ -23,6 +23,13 @@ const settings = {
     message: ['message', 'comments', 'your-message', 'details'],
   },
   requiredFields: ['email', 'message'],
+  model: 'claude-haiku-5-5',
+  systemPrompt: read('src/prompt.md').trim(),
+  businessDescription:
+    'REPLACE: what the business sells, to whom, typical project size, and what it does not do. ' +
+    'Example: Web design agency for small businesses in Germany. Websites and online shops, ' +
+    'typical projects from 5,000 to 30,000 EUR. No app development, no one-off logo work.',
+  hotScore: 70,
 };
 
 const nodes = [
@@ -64,8 +71,48 @@ const nodes = [
     parameters: { errorMessage: '={{ $json.errors.join("; ") }}' },
   }),
 
-  // Accepted leads end here for now; qualification and the CRM come next.
-  node('Lead accepted', 'n8n-nodes-base.noOp', 1, [1100, 280]),
+  node('Prepare qualification', 'n8n-nodes-base.code', 2, [1100, 280], {
+    parameters: { jsCode: read('src/prepare-qualification.js') },
+  }),
+
+  node('Ask Claude', 'n8n-nodes-base.httpRequest', 4.5, [1320, 280], {
+    parameters: {
+      method: 'POST',
+      url: 'https://api.anthropic.com/v1/messages',
+      authentication: 'genericCredentialType',
+      genericAuthType: 'httpHeaderAuth',
+      sendHeaders: true,
+      headerParameters: { parameters: [{ name: 'anthropic-version', value: '2023-06-01' }] },
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.request) }}',
+      options: { timeout: 60000 },
+    },
+    credentials: credential('httpHeaderAuth', 'Anthropic API key (x-api-key)'),
+    // Whatever still fails after the retries reaches Parse qualification as { error }, and the
+    // lead is marked for review instead of being lost.
+    retryOnFail: true,
+    maxTries: 4,
+    waitBetweenTries: 5000,
+    onError: 'continueRegularOutput',
+  }),
+
+  node('Parse qualification', 'n8n-nodes-base.code', 2, [1540, 280], {
+    parameters: { jsCode: read('src/parse-qualification.js') },
+  }),
+
+  node('Spam?', 'n8n-nodes-base.if', 2.2, [1760, 280], {
+    parameters: ifCondition('spam', "={{ $json.qualification.intent === 'spam' && !$json.needs_review }}", '', {
+      type: 'boolean',
+      operation: 'true',
+      singleValue: true,
+    }),
+  }),
+
+  node('Skip spam', 'n8n-nodes-base.noOp', 1, [1980, 120]),
+
+  // Qualified leads end here for now; the CRM comes next.
+  node('Qualified lead', 'n8n-nodes-base.noOp', 1, [1980, 320]),
 ];
 
 const connections = {
@@ -73,8 +120,12 @@ const connections = {
   Settings: link('Validate lead'),
   'Validate lead': link('Respond'),
   Respond: link('Accepted?'),
-  'Accepted?': link('Lead accepted', 'Not configured?'),
+  'Accepted?': link('Prepare qualification', 'Not configured?'),
   'Not configured?': link('Report missing secret', null),
+  'Prepare qualification': link('Ask Claude'),
+  'Ask Claude': link('Parse qualification'),
+  'Parse qualification': link('Spam?'),
+  'Spam?': link('Skip spam', 'Qualified lead'),
 };
 
 writeWorkflow(import.meta.url, 'workflow.json', workflow('Website lead intake', nodes, connections));
