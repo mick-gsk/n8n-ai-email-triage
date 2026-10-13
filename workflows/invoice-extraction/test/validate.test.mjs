@@ -34,11 +34,13 @@ describe('Validate', () => {
     assert.deepEqual(inv.reasons, []);
     assert.equal(inv.status, 'ok');
     assert.equal(inv.file_name, 'invoice.pdf', 'file details from Build request are kept');
+    assert.equal(inv.supplier_vat_id, 'DE123456788');
     assert.equal(inv.invoice_date, '2026-10-02');
     assert.equal(inv.due_date, '2026-10-16', 'from the payment terms in days');
     assert.equal(inv.currency, 'EUR');
     assert.deepEqual([inv.net_amount, inv.vat_amount, inv.gross_amount], [1250, 237.5, 1487.5]);
     assert.deepEqual(inv.vat_lines, [{ rate: 19, net: 1250, vat: 237.5 }]);
+    assert.equal(inv.iban, 'DE89370400440532013000');
     assert.deepEqual(
       inv.line_items.map((l) => l.amount),
       [500, 750],
@@ -224,6 +226,37 @@ describe('Validate', () => {
 
     test('a missing invoice date goes to review', () => {
       assert.match(german({ invoice_date: '' }).reasons.join(), /invoice date missing/);
+    });
+  });
+
+  describe('IBAN and VAT ID', () => {
+    test('IBANs of common countries pass the mod 97 check', () => {
+      for (const iban of ['DE89 3704 0044 0532 0130 00', 'AT61 1904 3002 3457 3201', 'CH93 0076 2011 6238 5295 7']) {
+        assert.deepEqual(german({ iban }).reasons, [], iban);
+      }
+    });
+
+    test('a mistyped or wrong-length IBAN goes to review', () => {
+      assert.deepEqual(german({ iban: 'DE89 3704 0044 0532 0130 01' }).reasons, [
+        'IBAN DE89370400440532013001 is not valid',
+      ]);
+      assert.equal(german({ iban: 'DE89 3704 0044 0532 0130' }).status, 'review');
+      assert.equal(german({ iban: 'not an iban' }).status, 'review');
+    });
+
+    test('VAT IDs are checked against the country format', () => {
+      for (const id of ['ATU12345678', 'NL123456789B01', 'FR12345678901', 'CHE-123.456.789 MWST', 'BE0123456789']) {
+        assert.deepEqual(german({ supplier_vat_id: id }).reasons, [], id);
+      }
+      for (const id of ['NL123456789', 'ATU1234567', 'FR1234567890', '123456789']) {
+        assert.equal(german({ supplier_vat_id: id }).status, 'review', id);
+      }
+    });
+
+    test('a German VAT ID with a wrong check digit goes to review', () => {
+      assert.deepEqual(german({ supplier_vat_id: 'DE123456789' }).reasons, [
+        'VAT ID "DE123456789" has a wrong check digit',
+      ]);
     });
   });
 

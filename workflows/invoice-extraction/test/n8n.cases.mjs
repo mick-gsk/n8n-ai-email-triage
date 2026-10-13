@@ -56,6 +56,8 @@ export const cases = [
       assert.equal(result.invoice_date, '2026-10-02');
       assert.equal(result.due_date, '2026-10-16');
       assert.equal(result.gross_amount, 1487.5);
+      assert.equal(result.supplier_vat_id, 'DE123456788');
+      assert.equal(result.iban, 'DE89370400440532013000');
       assert.equal(result.message_id, '19a0f1');
     },
   },
