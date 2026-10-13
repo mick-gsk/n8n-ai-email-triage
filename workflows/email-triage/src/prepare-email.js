@@ -20,7 +20,7 @@ const MAX_HEADER_CHARS = 300;
  * @property {string} [From] simplified output
  * @property {string} [Subject] simplified output
  *
- * @typedef {{ model: string, systemPrompt: string, labels?: Record<string, string> }} Settings
+ * @typedef {{ model: string, systemPrompt: string, doneLabel?: string }} Settings
  */
 
 /** @param {unknown} s */
@@ -31,13 +31,14 @@ const htmlToText = (html) => html.replace(/<style[\s\S]*?<\/style>/gi, '').repla
 
 const settings = /** @type {Settings} */ ($('Settings').first().json);
 // In production the trigger only returns mail received since the last poll. A manual
-// "Execute workflow" run fetches the newest unread email again, though, so mail that already
-// carries one of our labels is skipped instead of getting a second draft, alert and log row.
-const triageLabels = new Set(Object.values(settings.labels ?? {}));
+// "Execute workflow" run fetches the newest unread email again, though, so mail that was fully
+// processed before (it carries doneLabel) is skipped instead of getting a second draft, alert and
+// log row. A category label alone does not count: a run can fail after labelling, and a re-run
+// then has to do the rest.
 const messages = $('Gmail Trigger')
   .all()
   .map((item) => /** @type {GmailMessage} */ (item.json))
-  .filter((m) => !(m.labelIds ?? []).some((id) => triageLabels.has(id)));
+  .filter((m) => !settings.doneLabel || !(m.labelIds ?? []).includes(settings.doneLabel));
 
 // @ts-expect-error n8n runs Code node sources as a function body, so the top-level return is valid there.
 return messages.map((m) => {

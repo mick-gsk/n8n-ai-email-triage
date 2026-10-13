@@ -20,6 +20,9 @@ const settings = {
     spam: 'Label_SPAM',
     other: 'Label_REVIEW',
   },
+  // Added last, once labelling, alert, draft and log have all gone through. Mail that carries it
+  // is skipped, so a manual re-run does not create a second draft, alert or log row.
+  doneLabel: 'Label_TRIAGED',
   slackChannel: '#inbox-alerts',
   sheetId: 'YOUR_GOOGLE_SHEET_ID',
 };
@@ -156,6 +159,19 @@ const nodes = [
     },
     credentials: credential('googleSheetsOAuth2Api', 'Google Sheets account'),
   }),
+
+  // With execution order v1 the branches of Parse AI result run one after another, top to bottom,
+  // and a failing node stops the run. Hanging this off the lowest branch means it only runs when
+  // every branch above has succeeded.
+  node('Mark as triaged', 'n8n-nodes-base.gmail', 2.1, [1340, 620], {
+    parameters: {
+      resource: 'message',
+      operation: 'addLabels',
+      messageId: "={{ $('Parse AI result').item.json.id }}",
+      labelIds: "={{ [ $('Settings').first().json.doneLabel ] }}",
+    },
+    credentials: gmail,
+  }),
 ];
 
 const connections = {
@@ -166,6 +182,7 @@ const connections = {
   'Parse AI result': link(['Add Gmail label', 'High priority?', 'Needs reply?', 'Log to Google Sheets']),
   'High priority?': link('Alert on Slack', null),
   'Needs reply?': link('Create reply draft', null),
+  'Log to Google Sheets': link('Mark as triaged'),
 };
 
 writeWorkflow(import.meta.url, 'workflow.json', workflow('AI Email Triage (Gmail + Claude)', nodes, connections));

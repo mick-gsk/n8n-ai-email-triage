@@ -14,12 +14,12 @@ flowchart LR
     R --> L[Add Gmail label]
     R --> H{High priority?} -- yes --> SL[Alert on Slack]
     R --> N{Needs reply?} -- yes --> D[Create reply draft]
-    R --> G[Log to Google Sheets]
+    R --> G[Log to Google Sheets] --> M[Mark as triaged]
 ```
 
 1. Gmail Trigger picks up unread emails in the inbox (checks every minute).
 2. Prepare email extracts sender, subject and plain text (HTML is stripped, the body is cut to 6,000
-   characters) and skips mail that already has one of the triage labels.
+   characters) and skips mail that was already processed (it carries the done label).
 3. Ask Claude sends it to the Anthropic API with the prompt in [`src/prompt.md`](src/prompt.md) and gets
    back JSON: category, priority, a one-sentence summary, whether it needs a reply, and a draft reply in
    the sender's language.
@@ -28,6 +28,8 @@ flowchart LR
 5. Then the email is labelled (Support, Sales, Billing, Partnership, Job, Newsletter, Spam or Review),
    high-priority mail is posted to Slack, a draft is added to the Gmail thread if a reply is needed, and
    one row is appended to the log sheet.
+6. Mark as triaged adds the done label. It runs last and only if every step before it succeeded, so
+   an email whose run failed halfway is picked up again by a manual re-run.
 
 The shared error workflow in [`shared/error-alert`](../../shared/error-alert) posts to Slack when a run fails outright.
 
@@ -56,6 +58,7 @@ Settings node:
 |---|---|---|
 | `model` | `claude-haiku-5-5` | The request turns thinking off, which Haiku 5.5 accepts. For Opus 5.5 or Sonnet 5.5, remove `thinking` in `src/prepare-email.js` and raise `max_tokens`. |
 | `labels` | placeholders | Gmail label ID per category; `other` is the review label. |
+| `doneLabel` | placeholder | Gmail label ID added once an email is fully processed, e.g. a label `Triaged`. |
 | `slackChannel` | `#inbox-alerts` | Channel for high-priority mail. |
 | `sheetId` | placeholder | Needs a tab `Log` with the header row `processedAt, from, subject, category, priority, summary, needs_reply, needs_review, error`. |
 | `systemPrompt` | `src/prompt.md` | Edit the file and rebuild rather than the node, so tests and eval use the same text. |
@@ -99,7 +102,9 @@ timeout and up to 4 tries, polling every minute.
   then repeats the whole batch with a fixed 5 s wait. Emails that still fail go to Review rather than
   being retried later.
 - If a run stops after Ask Claude (for example a Gmail call fails), the trigger has already moved past
-  those emails. The error workflow reports it; the emails have to be labelled by hand or re-run.
+  those emails. The error workflow reports it. A manual run picks them up again because they lack the
+  done label, but repeats the steps that had already gone through, so a Slack alert or draft can
+  appear twice.
 - Attachments are ignored and only the first 6,000 characters of the body are read.
 - Prompt injection is mitigated, not ruled out: an email can still nudge category or priority. What it
   cannot do is get a link or account number into a draft, or reach Slack or Sheets unescaped.

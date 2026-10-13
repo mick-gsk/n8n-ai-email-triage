@@ -62,14 +62,14 @@ test('prepare: the prompt tells the model to treat the email as data', () => {
   assert.match(prompt, /not instructions to you/);
 });
 
-test('prepare: skips mail that already has a triage label', () => {
-  const labels = { support: 'Label_1', other: 'Label_9' };
+test('prepare: skips mail that was fully processed before', () => {
   const items = [
-    { ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_1'] },
-    { ...emails[1], labelIds: ['INBOX', 'UNREAD'] },
+    { ...emails[0], labelIds: ['INBOX', 'UNREAD', 'Label_SUPPORT', 'Label_DONE'] },
+    // Labelled, but the run failed before the end: a re-run has to finish it.
+    { ...emails[1], labelIds: ['INBOX', 'UNREAD', 'Label_SUPPORT'] },
   ];
   const out = runCodeNode(src('prepare-email.js'), {
-    nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, labels }] },
+    nodes: { 'Gmail Trigger': items, Settings: [{ ...settings, doneLabel: 'Label_DONE' }] },
   });
   assert.deepEqual(
     out.map((o) => o.email.id),
