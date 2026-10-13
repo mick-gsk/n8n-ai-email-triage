@@ -15,6 +15,7 @@ const SUSPICIOUS_DRAFT = [/https?:\/\/|www\./i, /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4
 /**
  * @typedef {object} ClaudeResponse Ask Claude output: a Messages API response, or { error } after failed retries.
  * @property {{ type: string, text?: string }[]} [content]
+ * @property {string} [stop_reason]
  * @property {string} [text]
  * @property {string | { message?: string }} [error]
  *
@@ -52,6 +53,8 @@ function triage(res) {
   // Ask Claude continues on error, so a failed request (after its retries) arrives here as
   // { error } and ends up in the Review label with the reason in the log.
   if (res.error) throw new Error(apiErrorMessage(res.error));
+  if (res.stop_reason === 'max_tokens') throw new Error('model reply cut off at max_tokens');
+  if (res.stop_reason === 'refusal') throw new Error('model declined to answer');
   const reply = res.content?.map((c) => c.text ?? '').join('') ?? res.text ?? '';
   const raw = extractJson(reply);
 
