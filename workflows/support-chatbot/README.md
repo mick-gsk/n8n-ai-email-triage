@@ -159,10 +159,12 @@ the same text.
 
 ## Running in production
 
-- Cost: a question that reaches the agent is two Claude calls (search, answer). The input is the
-  system prompt, up to four passages of about 1,000 characters, and the memory window, so a few
-  thousand tokens. At Haiku 5.5 list prices ($0.10 input / $0.50 output per million tokens, October
-  2026) that is well under a cent per question. Check the token counts in the execution data of a
+- Cost: a question that reaches the agent is usually two Claude calls (search, answer). The agent
+  may search again with other words, up to 5 calls per question (`maxIterations`), and each further
+  call carries the earlier results. The input per call is the system prompt, up to four passages of
+  about 1,000 characters per search, and the memory window, so a few thousand tokens. At Haiku 5.5
+  list prices ($0.10 input / $0.50 output per million tokens, October 2026) that is well under a
+  cent per question even at 5 calls. Check the token counts in the execution data of a
   few real conversations before quoting a number. Fixed replies and direct handoffs cost nothing.
   Embedding cost depends on the size of the folder; see OpenAI's price list.
 - Rate limits: the global limit is the protection that matters, since a client can pick a new
@@ -206,19 +208,22 @@ the same text.
 ## Tests
 
 `npm test` runs the Code node sources outside n8n with mocked `$input` and `$()`, and checks the
-exports: in sync with `src/`, chunk metadata and the delete-after-insert step in place, memory keyed
+exports: in sync with `src/`, chunk metadata, the per-file loop and the delete-after-insert step in
+place, the rate limit lock and session id cleaning, memory keyed
 by session id, Slack text escaped, only `output` returned to the browser.
 
-`npm run check:n8n -- support-chatbot` starts a pgvector container next to n8n 2.43 (Docker), runs
-`setup.sql`, and runs both workflows against it. Drive and Slack are replaced by nodes that return
+`N8N_IMAGE=docker.n8n.io/n8nio/n8n:2.43.4 npm run check:n8n -- support-chatbot` starts a pgvector
+container next to n8n 2.43.4 (Docker), runs `setup.sql`, and runs both workflows against it. Without
+`N8N_IMAGE` it uses `n8nio/n8n:latest`. Drive and Slack are replaced by nodes that return
 fixed files or record what they would send; OpenAI embeddings and Claude are answered by a local
 mock ([`test/mock-apis.mjs`](test/mock-apis.mjs)) whose embeddings are word hashes, so similar texts
 get similar vectors and the search really returns the matching passage. The cases in
-[`test/n8n.cases.mjs`](test/n8n.cases.mjs) ingest two Markdown files, re-ingest a changed one and
-check that its old chunk is gone, answer a refund question from the stored chunk with the linked
-source, hand off a question the documents do not cover, a request for a person and a failed Claude
-call to Slack, reject a flooding session and an over-long message, and forget a file removed from
-the folder.
+[`test/n8n.cases.mjs`](test/n8n.cases.mjs) ingest two Markdown files (each chunk with its own
+file's metadata), re-ingest a changed one and check that its old chunk is gone, answer a refund
+question from the stored chunk with the linked source, hand off a question the documents do not
+cover, a request for a person and a failed Claude call to Slack, reject a flooding session and an
+over-long message, forget a file removed from the folder, and empty the table when the folder is
+empty.
 
 The mock Claude follows the prompt by construction, so these runs test the workflow, not the
 quality of the answers. Try the prompt with your own documents and real questions before going
